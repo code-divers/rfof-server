@@ -1,8 +1,8 @@
 {
-  "name": "ts-project-seed",
-  "version": "1.0.4",
-  "description": "A seed project with the initial plumbing for TypeScript.",
-  "main": "index.js",
+  "name": "rfof-api",
+  "version": "1.0.0",
+  "description": "RFof API for interface clients",
+  "main": "dist/index.js",
   "scripts": {
     "clean": "rimraf dist",
     "build": "npm run clean && npm run lint && tsc -p tsconfig.json && npm run uglify && npm run browserify",
@@ -16,17 +16,13 @@
     "coveralls": "nyc npm test && nyc report --reporter=text-lcov | coveralls"
   },
   "repository": {
-    "url": "https://github.com/metadevpro/ts-project-seed"
+    "url": "git@github.com:code-divers/rfof-api.git"
   },
-  "keywords": [
-    "typescript",
-    "scaffolding"
-  ],
   "author": {
-    "name": "Pedro J. Molina",
-    "url": "http://pjmolina.com"
+    "name": "Yehuda Tuvia",
+    "url": "http://code-divers.com"
   },
-  "license": "CC0-1.0",
+  "license": "",
   "nyc": {
     "include": [
       "src/*.ts",
