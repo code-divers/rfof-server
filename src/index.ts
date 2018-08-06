@@ -1,1 +1,8 @@
-export { BiasTState, Cage, CageGroup, CageModule, EventLevel, EventLogItem, GroupRedundency, GroupStatus, GroupType, LNAStatus, ModuleStatus, ModuleType, MonPlan, ModuleStatusLED, PowerStatus, PowerSupply, TrapReciver, TrapLevelFilter } from './cage';
+import { RfofServer } from './rfof-server';
+
+const server = new RfofServer(20080);
+server.start().then((server: any) => {
+	console.log(server.address());
+}).catch((err) => {
+	console.log(err);
+});
