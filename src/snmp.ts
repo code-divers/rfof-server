@@ -1,15 +1,21 @@
 import * as snmp from 'net-snmp';
 import { SnmpVarBind, SnmpTableColumn, SnmpTable } from 'rfof-common';
+import { execSync } from 'child_process';
+
 
 export class SNMP {
+	private community;
+	private server;
 	session;
 	errorLog: string[] = [];
 	constructor() {
+		this.community = 'cMtc-04_3159';
 		let options = {
 			port: 161,
 			version: snmp.Version2c
 		};
-		this.session = new snmp.Session('localhost', 'public', options);
+		this.server = process.env.RFOF_CAGE_ADDRESS || 'localhost';
+		this.session = new snmp.Session(this.server, this.community , options);
 		this.session.on('error', (err) => {
 			throw err;
 		});
@@ -96,6 +102,28 @@ export class SNMP {
 			} catch (err) {
 				reject(err);
 			}
+		});
+	}
+
+	set(varBinds: SnmpVarBind[]) {
+		let results = [];
+		for (let varBind of varBinds) {
+			let command = this.buildSetCommand(varBind.command, {
+				index: varBind.index,
+				value: String(varBind.value),
+				community: this.community,
+				server: this.server
+			});
+			console.log(command);
+			let result = execSync(command);
+			results.push(result);
+		}
+		return results;
+	}
+
+	private buildSetCommand(command, data) {
+		return command.replace(/\{\{(.*?)\}\}/g, (i, match) => {
+			return data[match];
 		});
 	}
 

@@ -1,8 +1,15 @@
-import { Cage, CageGroup, CageModule, EventlogItem, PowerSupply, PowerStatus, SnmpVarBind, SnmpTableColumn, TrapReciver, CAGE_VARBINDS, POWER_VARBINDS, CAGENETWORK_TABLE, CAGEGROUP_TABLE, CAGEMODULE_TABLE, CAGEEVENTS_TABLE } from 'rfof-common';
+import { Cage, CageGroup, CageModule, EventlogItem, PowerSupply, PowerStatus, SnmpVarBind, SnmpTableColumn, TrapReciver, CAGE_VARBINDS, CAGE_MODULE_VARBINDS, POWER_VARBINDS, CAGENETWORK_TABLE, CAGEGROUP_TABLE, CAGEMODULE_TABLE, CAGEEVENTS_TABLE } from 'rfof-common';
 import { SNMP } from './snmp';
+import { Cache } from './cache';
+import { environment } from './environments/environment';
+import * as snmp from 'net-snmp';
+
+import { CAGE, CAGE_EVENTS, CAGE_GROUPS, CAGE_MODULES, CAGE_POWERSUPPLY, CAGE_TRAPRECIVERS } from 'rfof-common';
 
 export class MIBCage {
 	private snmp;
+	private cache;
+	private timer;
 	cage: Cage = new Cage();
 	power: PowerSupply[] = [];
 	network: TrapReciver[] = [];
@@ -10,28 +17,144 @@ export class MIBCage {
 	cageModules: CageModule[] = [];
 	cageEventlog: EventlogItem[] = [];
 
+	constructor() {
+		this.cache = new Cache(120);
+	}
+
+	async setModuleParameter(module: CageModule) {
+		let index = this.cageModules.findIndex((item) => {
+			return item.slot == module.slot;
+		});
+		let currentModule = this.cageModules[index];
+		let varBinds: SnmpVarBind[] = [];
+		if (currentModule.lna != module.lna) {
+			varBinds.push(this.createModuleVarBind(module.index, 'lna', module.lna));
+		}
+		if (currentModule.atten != module.atten) {
+			varBinds.push(this.createModuleVarBind(module.index, 'atten', module.atten));
+		}
+		if (currentModule.biasT != module.biasT) {
+			varBinds.push(this.createModuleVarBind(module.index, 'biasT', module.biasT));
+		}
+		if (currentModule.laser != module.laser) {
+			varBinds.push(this.createModuleVarBind(module.index, 'laser', module.laser));
+		}
+		if (currentModule.rfLinkTest != module.rfLinkTest) {
+			varBinds.push(this.createModuleVarBind(module.index, 'rfLinkTest', module.rfLinkTest));
+		}
+		if (currentModule.rfLinkTestTime != module.rfLinkTestTime) {
+			varBinds.push(this.createModuleVarBind(module.index, 'rfLinkTestTime', module.rfLinkTestTime));
+		}
+		if (currentModule.monInterval != module.monInterval) {
+			varBinds.push(this.createModuleVarBind(module.index, 'monInterval', module.monInterval));
+		}
+		if (currentModule.optAlarmLevel != module.optAlarmLevel) {
+			varBinds.push(this.createModuleVarBind(module.index, 'optAlarmLevel', module.optAlarmLevel));
+		}
+		if (currentModule.setDefaults != module.setDefaults) {
+			varBinds.push(this.createModuleVarBind(module.index, 'setDefaults', module.setDefaults));
+		}
+		if (currentModule.restoreFactory != module.restoreFactory) {
+			varBinds.push(this.createModuleVarBind(module.index, 'restoreFactory', module.restoreFactory));
+		}
+
+		this.snmp = new SNMP();
+		let result = await this.snmp.set(varBinds);
+		this.snmp.close();
+
+		this.cageModules[index] = module;
+		this.cache.del('cage-modules');
+		return result;
+	}
+
+	createModuleVarBind(index, columnName, value) {
+		let moduleColumns = CAGE_MODULE_VARBINDS;
+		let varBind = moduleColumns.find(column => {
+			return column.name == columnName;
+		});
+		varBind.value = value;
+		varBind.index = index;
+		varBind.oid += '.' + index;
+		return varBind;
+	}
+
+	initiateTimer() {
+		if (this.timer) {
+			clearTimeout(this.timer);
+		}
+		this.timer = setTimeout(this.updateCache.bind(this), 50);
+	}
+
+	async updateCache() {
+		try {
+			if (!environment.mock) {
+				await this.getInfo();
+				await this.getPowerSupply();
+				await this.getTrapRecivers();
+				await this.getGroups();
+				await this.getModules();
+				await this.getEvents();
+			} else {
+				this.cage = CAGE;
+				this.power = CAGE_POWERSUPPLY;
+				this.network = CAGE_TRAPRECIVERS;
+				this.cageGroups = CAGE_GROUPS;
+				this.cageModules = CAGE_MODULES;
+				this.cageEventlog = CAGE_EVENTS;
+			}
+		} catch (err) {
+			console.log(err);
+		} finally {
+			// this.initiateTimer();
+		}
+	}
+
 	getInfo() {
-		return this.getInfoAsync();
+		return this.cache.get('cage-info', () => {
+			return this.getInfoAsync().then(() => {
+				return this.cage;
+			});
+		});
 	}
 
 	getPowerSupply() {
-		return this.getPowerSupplyAsync();
+		return this.cache.get('cage-power', () => {
+			return this.getPowerSupplyAsync().then(() => {
+				return this.power;
+			});
+		});
 	}
 
 	getTrapRecivers() {
-		return this.getTrapReciversAsync();
+		return this.cache.get('cage-network', () => {
+			return this.getTrapReciversAsync().then(() => {
+				return this.network;
+			});
+		});
 	}
 
 	getGroups() {
-		return this.getGroupsAsync();
+		return this.cache.get('cage-groups', () => {
+			return this.getGroupsAsync().then(() => {
+				return this.cageGroups;
+			});
+		});
 	}
 
 	getModules() {
-		return this.getModulesAsync();
+		return this.cache.get('cage-modules', () => {
+			return this.getModulesAsync().then(() => {
+				return this.cageModules;
+			});
+		});
 	}
 
 	getEvents() {
-		return this.getEventsAsync();
+		return this.cache.get('cage-events', () => {
+			return this.getEventsAsync().then(() => {
+				return this.cageEventlog;
+			});
+		});
 	}
 
 	private async getInfoAsync() {
@@ -74,7 +197,7 @@ export class MIBCage {
 	private async getCageInfoAsync() {
 		let values: SnmpVarBind[] = await this.snmp.get(CAGE_VARBINDS);
 		values.map(varBind => {
-			this.cage[varBind.name] = varBind.value;
+			this.cage[varBind.name] = varBind.value.trim();
 		});
 		return this.cage;
 	}
@@ -111,7 +234,7 @@ export class MIBCage {
 		table.map((row) => {
 			let trapReciver: TrapReciver = {};
 			for (let cell of row.columns) {
-				trapReciver[cell.name] = cell.value;
+				trapReciver[cell.name] = cell.value.trim();
 			}
 			cageTrapRecivers.push(trapReciver);
 		});
@@ -125,7 +248,7 @@ export class MIBCage {
 		table.map((row) => {
 			let cageGroup = new CageGroup();
 			for (let cell of row.columns) {
-				cageGroup[cell.name] = cell.value;
+				cageGroup[cell.name] = cell.value.trim();
 			}
 			cageGroups.push(cageGroup);
 		});
@@ -139,10 +262,10 @@ export class MIBCage {
 		table.map((row) => {
 			let cageModule = new CageModule();
 			for (let cell of row.columns) {
-				cageModule[cell.name] = cell.value;
+				cageModule[cell.name] = cell.value.trim();
 			}
+			cageModule.index = row.index;
 			let res = /^(\d).(\d)/.exec(row.index);
-
 			if (res) {
 				let groupIndex = Number(res[1]) - 1;
 				cageModule.group = this.cageGroups[groupIndex];
@@ -159,7 +282,7 @@ export class MIBCage {
 		table.map((row) => {
 			let logitem: EventlogItem = {};
 			for (let cell of row.columns) {
-				logitem[cell.name] = cell.value;
+				logitem[cell.name] = cell.value.trim();
 			}
 			cageEventlog.push(logitem);
 		});
