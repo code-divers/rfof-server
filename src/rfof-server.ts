@@ -9,6 +9,9 @@ import { MIBCage } from './mib-cage';
 
 export class RfofServer {
 	app;
+	io;
+	timer;
+	sample: Boolean = false;
 	port: number;
 	mib: MIBCage;
 	constructor(port: number) {
@@ -23,13 +26,47 @@ export class RfofServer {
 	start() {
 		return new Promise((resolve, reject) => {
 			return this.mib.updateCache().then(() => {
-				let server = http.createServer(this.app);
-				server.listen(this.port, () => {
-					resolve(server);
+				let rest = http.createServer(this.app);
+				rest.listen(this.port, () => {
+					this.io = require('socket.io')(rest);
+					this.io.on('connection', (socket) => {
+					  console.log('user connected');
+					  
+					  socket.on('disconnect', function(){
+					    console.log('user disconnected');
+					  });
+					  
+					  socket.on('sample-sensors', () => {
+					  	console.log('sample');
+					  	 this.sampleSensors();
+					  });
+					  socket.on('stop-sample-sensors', () => {
+					  	this.sample = false;
+					  });
+					});
+					resolve([rest, this.io]);
 				});
 			});
 		});
 	}
+
+	private sampleSensors() {
+		this.sample = true;
+		let self = this;
+		this.timer = setTimeout(function sample(){
+			self.mib.updateCache(true).then(result=>{
+		  		let sensors = {
+		  			modules: self.mib.cageModules
+		  		};
+		  		self.io.emit('sensors', sensors);
+		  		if(self.sample){
+		  			if(self.timer) clearTimeout(self.timer);
+		  			self.timer = setTimeout(sample, 500);
+		  		}
+		  	})
+		}, 500)
+	}
+
 	private setStaticRoute() {
 		let app = this.app;
 		app.use('/', express.static(path.join(__dirname, '/../../rfof-client/dist/rfof')));
@@ -72,6 +109,15 @@ export class RfofServer {
 		});
 		app.post('/api/cage/module', (req, res) => {
 			this.mib.setModuleParameter(req.body.module).then(result => {
+				res.send({
+					data: result
+				});
+			}).catch(err => {
+				res.status(500).send({ error: err });
+			});
+		});
+		app.post('/api/cage/group', (req, res) => {
+			this.mib.setCageGroupParameter(req.body.group).then(result => {
 				res.send({
 					data: result
 				});

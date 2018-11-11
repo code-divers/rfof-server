@@ -1,4 +1,4 @@
-import { Cage, CageGroup, CageModule, EventlogItem, PowerSupply, PowerStatus, SnmpVarBind, SnmpTableColumn, TrapReciver, CAGE_VARBINDS, CAGE_MODULE_VARBINDS, POWER_VARBINDS, CAGENETWORK_TABLE, CAGEGROUP_TABLE, CAGEMODULE_TABLE, CAGEEVENTS_TABLE } from 'rfof-common';
+import { Cage, CageGroup, CageModule, EventlogItem, PowerSupply, PowerStatus, SnmpVarBind, SnmpTableColumn, TrapReciver, CAGE_VARBINDS, CAGE_MODULE_VARBINDS, POWER_VARBINDS, CAGENETWORK_TABLE, CAGEGROUP_TABLE, CAGEMODULE_TABLE, CAGEEVENTS_TABLE, CAGE_GROUP_VARBINDS } from 'rfof-common';
 import { SNMP } from './snmp';
 import { Cache } from './cache';
 import { environment } from './environments/environment';
@@ -19,6 +19,32 @@ export class MIBCage {
 
 	constructor() {
 		this.cache = new Cache(120);
+	}
+
+	async setCageGroupParameter(group: CageGroup) {
+		let cageGroup = this.cageGroups.find(item => {
+			return item.index == item.index;
+		});
+
+		if (cageGroup.redundencySwitch != group.redundencySwitch) {
+				let groupColumns = CAGE_GROUP_VARBINDS;
+			let varBind = groupColumns.find(column => {
+				return column.name == 'redundencySwitch';
+			});
+			varBind.value = group.redundencySwitch;
+			varBind.index = group.index;
+			varBind.oid += '.' + group.index;
+
+			this.snmp = new SNMP();
+			let varBinds: SnmpVarBind[] = [varBind];
+			let result = await this.snmp.set(varBinds);
+			this.snmp.close();
+
+			cageGroup = group;
+			this.cache.del('cage-groups');
+			return result;
+		}
+		return null;
 	}
 
 	async setModuleParameter(module: CageModule) {
@@ -85,15 +111,15 @@ export class MIBCage {
 		this.timer = setTimeout(this.updateCache.bind(this), 50);
 	}
 
-	async updateCache() {
+	async updateCache(refresh = false) {
 		try {
 			if (!environment.mock) {
-				await this.getInfo();
-				await this.getPowerSupply();
-				await this.getTrapRecivers();
-				await this.getGroups();
-				await this.getModules();
-				await this.getEvents();
+				await this.getInfo(refresh);
+				await this.getPowerSupply(refresh);
+				await this.getTrapRecivers(refresh);
+				await this.getGroups(refresh);
+				await this.getModules(refresh);
+				await this.getEvents(refresh);
 			} else {
 				this.cage = CAGE;
 				this.power = CAGE_POWERSUPPLY;
@@ -109,7 +135,8 @@ export class MIBCage {
 		}
 	}
 
-	getInfo() {
+	getInfo(refresh) {
+		if(refresh) this.cache.del('cage-info');
 		return this.cache.get('cage-info', () => {
 			return this.getInfoAsync().then(() => {
 				return this.cage;
@@ -117,7 +144,8 @@ export class MIBCage {
 		});
 	}
 
-	getPowerSupply() {
+	getPowerSupply(refresh) {
+		if(refresh) this.cache.del('cage-power');
 		return this.cache.get('cage-power', () => {
 			return this.getPowerSupplyAsync().then(() => {
 				return this.power;
@@ -125,7 +153,8 @@ export class MIBCage {
 		});
 	}
 
-	getTrapRecivers() {
+	getTrapRecivers(refresh) {
+		if(refresh) this.cache.del('cage-network');
 		return this.cache.get('cage-network', () => {
 			return this.getTrapReciversAsync().then(() => {
 				return this.network;
@@ -133,7 +162,8 @@ export class MIBCage {
 		});
 	}
 
-	getGroups() {
+	getGroups(refresh) {
+		if(refresh) this.cache.del('cage-groups');
 		return this.cache.get('cage-groups', () => {
 			return this.getGroupsAsync().then(() => {
 				return this.cageGroups;
@@ -141,7 +171,8 @@ export class MIBCage {
 		});
 	}
 
-	getModules() {
+	getModules(refresh) {
+		if(refresh) this.cache.del('cage-modules');
 		return this.cache.get('cage-modules', () => {
 			return this.getModulesAsync().then(() => {
 				return this.cageModules;
@@ -149,7 +180,8 @@ export class MIBCage {
 		});
 	}
 
-	getEvents() {
+	getEvents(refresh) {
+		if(refresh) this.cache.del('cage-events');
 		return this.cache.get('cage-events', () => {
 			return this.getEventsAsync().then(() => {
 				return this.cageEventlog;
@@ -250,6 +282,7 @@ export class MIBCage {
 			for (let cell of row.columns) {
 				cageGroup[cell.name] = cell.value.trim();
 			}
+			cageGroup.index = row.index;
 			cageGroups.push(cageGroup);
 		});
 		this.cageGroups = cageGroups;

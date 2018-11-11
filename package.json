@@ -72,6 +72,7 @@
     "express": "^4.16.3",
     "net-snmp": "^1.2.4",
     "node-cache": "^4.2.0",
-    "rfof-common": "file:../rfof-common/"
+    "rfof-common": "file:../rfof-common/",
+    "socket.io": "^2.1.1"
   }
 }
