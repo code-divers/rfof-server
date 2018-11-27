@@ -1,13 +1,12 @@
 import * as snmp from 'net-snmp';
 import { SnmpVarBind, SnmpTableColumn, SnmpTable } from 'rfof-common';
-import { execSync } from 'child_process';
+import { execSync, exec } from 'child_process';
 
 
 export class SNMP {
 	private community;
 	private server;
-	session;
-	errorLog: string[] = [];
+	private commands = [];
 	constructor() {
 		this.community = 'cMtc-04_3159';
 		let options = {
@@ -15,120 +14,98 @@ export class SNMP {
 			version: snmp.Version2c
 		};
 		this.server = process.env.RFOF_CAGE_ADDRESS || 'localhost';
-		this.session = new snmp.Session(this.server, this.community , options);
-		this.session.on('error', (err) => {
-			throw err;
-		});
 	}
 
-	walk(oid): Promise<SnmpVarBind[]> {
-		return new Promise((resolve, reject) => {
-			this.session.walk (oid, 20, (varbinds) => {
-				let result: SnmpVarBind[] = [];
-				for (let i = 0; i < varbinds.length; i++) {
-					if (snmp.isVarbindError (varbinds[i])) {
-						this.errorLog.push(snmp.varbindError(varbinds[i]));
-					}
-					else {
-						result.push({
-							oid: varbinds[i].oid,
-							value: varbinds[i].value.toString()
-						});
-					}
-				}
-				return resolve(result);
-			}, (err) => {
-				if (err) {
-				reject(err);
-			}});
-		});
+	queueCommand(command, callback){
+		this.commands.push({command:command, callback: callback});
 	}
 
-	get(varBinds: SnmpVarBind[]) {
-		return new Promise((resolve, reject) => {
-			try {
-				let oids: string[] = varBinds.map((key) => {return key.oid; });
-				this.session.get(oids, (err, varbinds) => {
-					if (err) {
-						return reject(err);
-					} else {
-						let result: SnmpVarBind[] = [];
-						for (let i = 0; i < varbinds.length; i++) {
-							if (snmp.isVarbindError (varbinds[i])) {
-								this.errorLog.push(snmp.varbindError (varbinds[i]));
-							}
-							else {
-								let varBind = varBinds.find((varBind) => {
-									return varBind.oid == varbinds[i].oid;
-								});
-								varBind.value = varbinds[i].value.toString();
-							}
-						}
-						return resolve(varBinds);
-					}
-				});
-			} catch (err) {
-				return reject(err);
+	executeQueu(){
+		let commandItem = this.commands.pop();
+		if(commandItem){
+			exec(commandItem.command, (result)=>{
+				commandItem.callback(result)
+				this.executeQueu();
+			});
+		}
+	}
+
+	get(varBind: SnmpVarBind) {
+		return new Promise((resolve, reject)=>{
+			let command = `snmpget -c ${this.community} -v 2c ${this.server} ${varBind.oid}`;
+			if (varBind.index) {
+				command += `.${varBind.index}`;
 			}
-		});
+			// console.log(command);
+			exec(command, (err, out)=>{
+				if(err){
+					return reject(err);
+				}else{
+					let result = out;
+					// console.log(result);
+					let stringRegex = /^RFoF-Cage-MIB::(\w*)\s*=\s*STRING:\s*"([\w\s]*)"/;
+					let integerRegex = /^RFoF-Cage-MIB::(\w*)\s*=\s*INTEGER:\s*(\d*)/;
+					let integerRegexIdx = /^RFoF-Cage-MIB::(\w*)\s*[.\d]*\s*=\s*INTEGER:\s*\w*\((\d*)\)/;
+					let stringRegexIdx = /^^RFoF-Cage-MIB::(\w*)\s*[.\d]*\s*=\s*STRING: "([\s\d\w\W]*)"/;
+					let regexSatements = [stringRegex, integerRegex, integerRegexIdx, stringRegexIdx];
+
+					varBind.value = null;
+					for (let regex of regexSatements) {
+						let matches = result.match(regex);
+						if (matches) {
+							varBind.value = matches[2].trim();
+							break;
+						}
+					}
+					return resolve(varBind);
+				}
+			})
+		})
 	}
 
 	table(schema: SnmpTable) {
-		return new Promise((resolve, reject) => {
-			try {
-				this.session.table(schema.oid, (err, result) => {
-					if (err) {
-						return reject(err);
-					} else {
-						let table = [];
-					for (let rowIndex in result) {
-						let tableRow = {index: rowIndex, columns: []};
-						let row = result[rowIndex];
-						for (let cellIndex in row) {
-							let cell = row[cellIndex];
-							let column: SnmpTableColumn = schema.columns.find((column) => {
-								return column.index == cellIndex;
-							});
-							if (column) {
-								column.value = cell.toString();
-								tableRow.columns.push({...column});
+		return new Promise((resolve, reject)=>{
+			let table = [];
+			let command = `snmptable -v 2c -c ${this.community} -Ci -Os ${this.server} RFoF-Cage-MIB::${schema.systemName}`;
+			exec(command, (err, out)=>{
+				if(err){
+					return reject(err);
+				}else{
+					let result = out;
+					let lines = result.split(/\r?\n/);
+					for (let line of lines) {
+						let matches = line.match(new RegExp(schema.regex, 'i'));
+						if (matches) {
+							let row = {
+								index: null,
+								items: []
+							};
+							for (let varbind of schema.columns) {
+								varbind.value = matches[varbind.tableIndex + 1].trim();
+								row.items.push({... varbind});
 							}
+							row.index = matches[1].trim();
+							table.push(row);
 						}
-						table.push(tableRow);
 					}
-					resolve(table);
-					}
-				});
-			} catch (err) {
-				reject(err);
-			}
-		});
-	}
-
-	set(varBinds: SnmpVarBind[]) {
-		let results = [];
-		for (let varBind of varBinds) {
-			let command = this.buildSetCommand(varBind.command, {
-				index: varBind.index,
-				value: String(varBind.value),
-				community: this.community,
-				server: this.server
+					return resolve(table);
+				}
 			});
-			console.log(command);
-			let result = execSync(command);
-			results.push(result);
-		}
-		return results;
+		})
 	}
 
-	private buildSetCommand(command, data) {
-		return command.replace(/\{\{(.*?)\}\}/g, (i, match) => {
-			return data[match];
-		});
-	}
-
-	close() {
-		this.session.close();
+	set(varbind: SnmpVarBind) {
+		return new Promise((resolve, reject)=>{
+			let command = `snmpset -Os -v2c -c ${this.community} ${this.server} RFoF-Cage-MIB::${varbind.systemName}.${varbind.index} ${varbind.type} ${varbind.value}`;
+			// console.log(command);
+			exec(command, (err, out)=>{
+				if(err){
+					return reject(err);
+				}else{
+					return resolve(out);
+				}
+			});
+		})
 	}
 }
 

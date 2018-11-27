@@ -22,6 +22,10 @@ export class Cache {
 		this.cache.del(keys);
 	}
 
+	set(key, value) {
+		this.cache.set(key, value);
+	}
+
 	delStartWith(startStr = '') {
 		if (!startStr) {
 			return;
