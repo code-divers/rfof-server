@@ -6,11 +6,14 @@ let path = require('path');
 let bodyParser = require('body-parser');
 
 import { MIBCage } from './mib-cage';
+import { logger } from './logger';
 
 export class RfofServer {
 	app;
 	port: number;
 	mib: MIBCage;
+	io;
+	cache;
 	constructor(port: number) {
 		this.port = port;
 		this.app = express();
@@ -19,21 +22,41 @@ export class RfofServer {
 		this.mib = new MIBCage();
 		this.setApiRoute();
 		this.setStaticRoute();
+		this.cache = {
+			cage: null,
+			power: null,
+			network: null,
+			groups: null,
+			modules: null,
+			events: null
+		};
 	}
 	start() {
 		return new Promise((resolve, reject) => {
-			return this.mib.getFromCache().then(() => {
+			this.mib.on('sensors', (module) => {
+				logger.debug('sensors updated for module %s in slot %s', module.name, module.slot);
+				this.cache.modules.map((item) => {
+					if (item.slot == module.slot && item.name == module.name) {
+						item = module;
+					}
+				});
+				this.io.emit('sensors', module);
+			});
+			this.mib.on('update', (update) => {
+				logger.debug('MIB cage data updated', update);
+				this.cache = {...this.cache, ...update};
+			});
+			return this.mib.getData().then(() => {
 				let rest = http.createServer(this.app);
-				let io = require('socket.io')(rest);
-				io.on('connection', (socket) => {
+				this.io = require('socket.io')(rest);
+				this.io.on('connection', (socket) => {
+					logger.info('Web socket user connected');
 					socket.on('disconnect', () => {
+						logger.info('Web socket user disconnected');
 					});
 				});
-				this.mib.on('sensors', (module) => {
-					io.emit('sensors', module);
-				});
 				rest.listen(this.port, () => {
-					resolve(rest);
+					resolve(rest.address());
 				});
 			});
 		});
@@ -51,32 +74,32 @@ export class RfofServer {
 		});
 		app.get('/api/cage', (req, res) => {
 			res.send({
-				data: this.mib.cage
+				data: this.cache.cage
 			});
 		});
 		app.get('/api/cage/power', (req, res) => {
 			res.send({
-				data: this.mib.power
+				data: this.cache.power
 			});
 		});
 		app.get('/api/cage/network', (req, res) => {
 			res.send({
-				data: this.mib.network
+				data: this.cache.network
 			});
 		});
 		app.get('/api/cage/groups', (req, res) => {
 			res.send({
-				data: this.mib.cageGroups
+				data: this.cache.groups
 			});
 		});
 		app.get('/api/cage/modules', (req, res) => {
 			res.send({
-				data: this.mib.cageModules
+				data: this.cache.modules
 			});
 		});
 		app.get('/api/cage/events', (req, res) => {
 			res.send({
-				data: this.mib.cageEventlog
+				data: this.cache.events
 			});
 		});
 		app.post('/api/cage/module', (req, res) => {

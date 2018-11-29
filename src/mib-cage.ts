@@ -4,15 +4,14 @@ import { Cache } from './cache';
 import { environment } from './environments/environment';
 import { EventEmitter } from 'events';
 import { SNMPListener } from './snmp-listener';
-
 import { CAGE, CAGE_EVENTS, CAGE_GROUPS, CAGE_MODULES, CAGE_POWERSUPPLY, CAGE_TRAPRECIVERS } from 'rfof-common';
+import { logger } from './logger';
 
 export class MIBCage extends EventEmitter {
 	private snmp;
 	private snmpListener: SNMPListener;
-	private cache;
-	private cacheUpdating = false;
 	private sampleTimer;
+	private updateTimer;
 	private updateCacheTimer;
 	cage: Cage = new Cage();
 	power: PowerSupply[] = [];
@@ -23,45 +22,53 @@ export class MIBCage extends EventEmitter {
 
 	constructor() {
 		super();
-		this.cache = new Cache(120);
 		this.snmp = new SNMP();
 		this.snmpListener = new SNMPListener();
 
 		let self = this;
 		this.snmpListener.messageEmitter.on('message', (message) => {
-			console.log('Message from cage:', message.data.toString('utf-8'));
-			console.log('cacheUpdating:', self.cacheUpdating);
-			if (!self.cacheUpdating) {
-				self.updateCache().then(() => {
-					console.log('Flushed mib cache');
-				}).catch((err) => {
-					console.log('error white flushing cache', err);
-				});
-			}
+			logger.debug('Recived a message %s from snmp listener', message);
 		});
 	}
 
-	public startRfLinkTestSampler(module: CageModule) {
+	public startDelayedSampler(module: CageModule) {
+		let self = this;
+		this.sampleTimer = setTimeout(function sample() {
+			self.sampleModuleSensors(module);
+		}, 1000);
+	}
+
+	public startRFTestSampler(module: CageModule) {
 		let self = this;
 		this.sampleTimer = setTimeout(function sample() {
 			self.sampleModuleSensors(module).then(updatedModule => {
 				self.emit('sensors', updatedModule);
 				if (updatedModule.rfLinkTest == RfLinkTest.on) {
 					if (self.sampleTimer) clearTimeout(self.sampleTimer);
-					self.sampleTimer = setTimeout(sample, 500);
+					self.sampleTimer = setTimeout(sample, 3000);
+				}
+			});
+		}, 500);
+	}
+
+	public startMonplanTestSampler(module: CageModule) {
+		let self = this;
+		this.sampleTimer = setTimeout(function sample() {
+			self.sampleModuleSensors(module).then(updatedModule => {
+				if (updatedModule.monPlan == MonPlan.active) {
+					if (self.sampleTimer) clearTimeout(self.sampleTimer);
+					self.sampleTimer = setTimeout(sample, 3000);
 				}
 			});
 		}, 500);
 	}
 
 	public showRFLevelSampler(module: CageModule) {
-		this.sampleModuleSensors(module).then(updatedModule => {
-			this.emit('sensors', updatedModule);
-		});
+		return this.sampleModuleSensors(module);
 	}
 
 	async sampleModuleSensors(module: CageModule) {
-		let sensors = ['rfLevel', 'rfLinkTest', 'measRfLevel'];
+		let sensors = ['lna', 'atten', 'optPower', 'biasT', 'laser', 'status', 'statusLED', 'rfLevel', 'rfLinkTest', 'rfTestTimer', 'measRfLevel', 'temp', 'optAlarmLevel', 'monPlan', 'monTimer', 'laser'];
 		let varBinds = CAGE_MODULE_VARBINDS.filter((varbind) => {
 			return sensors.find((sensor) => {
 				return varbind.name == sensor;
@@ -72,14 +79,21 @@ export class MIBCage extends EventEmitter {
 			return varbind;
 		});
 		let values = [];
-		for(let varbind of varBinds){
+		for (let varbind of varBinds) {
 			let value = await this.snmp.get(varbind);
+			console.log(varbind.name, varbind.value);
 			values.push(value);
 		}
 		values.map(varbind => {
-			module[varbind.name] = varbind.value;
+			let value = varbind.value;
+			module[varbind.name] = value;
 		});
-		// console.log(values);
+		let idx = this.cageModules.findIndex((item) => {
+			return item.slot == module.slot && item.name == module.name;
+		});
+		this.cageModules[idx] = module;
+
+		this.emit('sensors', module);
 		return module;
 	}
 
@@ -103,7 +117,6 @@ export class MIBCage extends EventEmitter {
 			this.snmp.close();
 
 			cageGroup = group;
-			this.cache.del('cage-groups');
 			return result;
 		}
 		return null;
@@ -115,152 +128,76 @@ export class MIBCage extends EventEmitter {
 		});
 		let currentModule = this.cageModules[index];
 
-		let varBinds = CAGE_MODULE_VARBINDS.filter(varbind => {
-			// console.log(varbind.name, currentModule[varbind.name], module[varbind.name]);
-			if (currentModule[varbind.name] != module[varbind.name]) {
-				varbind.value = module[varbind.name];
-				varbind.index = module.index;
-				return varbind;
-			}
-		});
-		for(let varbind of varBinds){
-			await this.snmp.set(varbind);
-		}
-		
-		this.cageModules[index] = module;
-		this.cache.set('cage-modules', this.cageModules);
+		let fields = ['lna', 'atten', 'laser', 'measRfLevel', 'rfLinkTest', 'rfLinkTestTime', 'monPlan', 'monInterval'];
 
-		if (module.measRfLevel == MeasRfLevel.on) {
-			this.showRFLevelSampler(module);
+		let varBinds = CAGE_MODULE_VARBINDS.filter(varbind => {
+			return fields.indexOf(varbind.name) > -1 && currentModule[varbind.name] != module[varbind.name];
+		});
+		varBinds.map((varbind) => {
+			varbind.value = module[varbind.name];
+			varbind.index = module.index;
+			return varbind;
+		});
+		for (let varbind of varBinds) {
+			await this.snmp.set(varbind);
+			this.cageModules[index][varbind.name] = varbind.value;
+		}
+
+		if (module.rfLinkTest == RfLinkTest.off && module.monPlan == MonPlan.sleep) {
+			this.startDelayedSampler(module);
 		}
 
 		if (module.rfLinkTest == RfLinkTest.on) {
-			this.startRfLinkTestSampler(module);
+			this.startRFTestSampler(module);
 		}
+		if (module.monPlan == MonPlan.active) {
+			this.startMonplanTestSampler(module);
+		}
+
 		return varBinds;
 	}
 
-	async getFromCache() {
-		if (!this.cacheUpdating) {
-			try {
-				if (!environment.mock) {
-					await this.getInfo();
-					await this.getPowerSupply();
-					await this.getTrapRecivers();
-					await this.getGroups();
-					await this.getModules();
-					await this.getEvents();
-				} else {
-					this.cage = CAGE;
-					this.power = CAGE_POWERSUPPLY;
-					this.network = CAGE_TRAPRECIVERS;
-					this.cageGroups = CAGE_GROUPS;
-					this.cageModules = CAGE_MODULES;
-					this.cageEventlog = CAGE_EVENTS;
-				}
-			} catch (err) {
-				console.log(err);
-			} finally {
-				// this.initiateTimer();
-			}
-		}
-	}
-
-	async updateCache() {
+	async getData() {
 		try {
-			this.cacheUpdating = true;
-			await this.getInfoAsync();
-			await this.getPowerSupplyAsync();
-			await this.getTrapReciversAsync();
-			await this.getModulesAsync();
-			await this.getEventsAsync();
-			this.cache.set('cage-info', this.cage);
-			this.cache.set('cage-power', this.power);
-			this.cache.set('cage-network', this.network);
-			this.cache.set('cage-events', this.cageEventlog);
-			this.cache.set('cage-modules', this.cageModules);
-			this.cache.set('cage-groups', this.cageGroups);
+			if (!environment.mock) {
+				await this.getCageInfoAsync();
+				await this.getCagePowerSupplyAsync();
+				await this.getCageTrapReciversAsync();
+				await this.getCageGroupsAsync();
+				await this.getCageModulsAsync();
+				await this.getCageEventsAsync();
+			} else {
+				this.cage = CAGE;
+				this.power = CAGE_POWERSUPPLY;
+				this.network = CAGE_TRAPRECIVERS;
+				this.cageGroups = CAGE_GROUPS;
+				this.cageModules = CAGE_MODULES;
+				this.cageEventlog = CAGE_EVENTS;
+			}
+		} catch (err) {
+			console.log(err);
 		} finally {
-			this.cacheUpdating = false;
+			this.emit('update', {
+				cage: this.cage,
+				power: this.power,
+				network: this.network,
+				groups: this.cageGroups,
+				modules: this.cageModules,
+				events: this.cageEventlog
+			});
+			let self = this;
+			this.updateTimer = setTimeout(function sample() {
+				self.getData().then(() => {
+					if (self.updateTimer) clearTimeout(self.updateTimer);
+					self.updateTimer = setTimeout(sample, 60000);
+				});
+			}, 60000);
 		}
-	}
-
-	getInfo() {
-		return this.cache.get('cage-info', () => {
-			return this.getInfoAsync().then(() => {
-				return this.cage;
-			});
-		});
-	}
-
-	getPowerSupply() {
-		return this.cache.get('cage-power', () => {
-			return this.getPowerSupplyAsync().then(() => {
-				return this.power;
-			});
-		});
-	}
-
-	getTrapRecivers() {
-		return this.cache.get('cage-network', () => {
-			return this.getTrapReciversAsync().then(() => {
-				return this.network;
-			});
-		});
-	}
-
-	getGroups() {
-		return this.cache.get('cage-groups', () => {
-			return this.getGroupsAsync().then(() => {
-				return this.cageGroups;
-			});
-		});
-	}
-
-	getModules() {
-		return this.cache.get('cage-modules', () => {
-			return this.getModulesAsync().then(() => {
-				return this.cageModules;
-			});
-		});
-	}
-
-	getEvents() {
-		return this.cache.get('cage-events', () => {
-			return this.getEventsAsync().then(() => {
-				return this.cageEventlog;
-			});
-		});
-	}
-
-	private async getInfoAsync() {
-		await this.getCageInfoAsync();
-	}
-
-	private async getPowerSupplyAsync() {
-		await this.getCagePowerSupplyAsync();
-	}
-
-	private async getTrapReciversAsync() {
-		await this.getCageTrapReciversAsync();
-	}
-
-	private async getGroupsAsync() {
-		await this.getCageGroupsAsync();
-	}
-
-	private async getModulesAsync() {
-		await this.getCageGroupsAsync();
-		await this.getCageModulsAsync();
-	}
-
-	private async getEventsAsync() {
-		await this.getCageEventsAsync();
 	}
 
 	private async getCageInfoAsync() {
 		let values = [];
-		for(let item of CAGE_VARBINDS){
+		for (let item of CAGE_VARBINDS) {
 			let varbind = await this.snmp.get(item);
 			values.push(varbind);
 		}
@@ -279,11 +216,11 @@ export class MIBCage extends EventEmitter {
 
 	private async getCagePowerSupplyAsync() {
 		let values = [];
-		for(let item of POWER_VARBINDS){
+		for (let item of POWER_VARBINDS) {
 			let varbind = await this.snmp.get(item);
 			values.push(varbind);
 		}
-		if(values.length > 0){
+		if (values.length > 0) {
 			let value = values[0].value;
 			let powerSupplies: PowerSupply[] = [];
 			for (let char of value) {

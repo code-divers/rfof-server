@@ -1,8 +1,10 @@
 import { RfofServer } from './rfof-server';
+import { logger } from './logger';
 
 const server = new RfofServer(20080);
 server.start().then((result: any) => {
-	console.log('REST server listening on ' + JSON.stringify(result.address()));
+	logger.info(`REST server listening`, result);
 }).catch((err) => {
+	logger.error(`error starting server %s`, err);
 	console.log(err);
 });

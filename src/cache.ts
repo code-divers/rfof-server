@@ -23,6 +23,7 @@ export class Cache {
 	}
 
 	set(key, value) {
+		this.cache.del(key);
 		this.cache.set(key, value);
 	}
 
@@ -41,5 +42,10 @@ export class Cache {
 
 	flush() {
 		this.cache.flushAll();
+	}
+
+
+	stats() {
+		return this.cache.getStats();
 	}
 }
