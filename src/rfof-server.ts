@@ -42,9 +42,24 @@ export class RfofServer {
 				});
 				this.io.emit('sensors', module);
 			});
-			this.mib.on('update', (update) => {
-				logger.debug('MIB cage data updated', update);
-				this.cache = {...this.cache, ...update};
+			this.mib.on('moduleupdate', (module) => {
+				logger.debug('module %s at slot %s updated', module.name, module.slot);
+				let idx = this.cache.modules.findIndex(item => {
+					item.slot == module.slot && item.name == module.name;
+				});
+				if (idx > -1) {
+					this.cache.modules[idx] = module;
+					this.io.emit('moduleupdate', module);
+				}
+			});
+			this.mib.on('flush', (data) => {
+				logger.debug('MIB cage data flushed', data);
+				this.cache = {...this.cache, ...data};
+			});
+			this.mib.on('eventlogline', (logline) => {
+				logger.debug('new logline added at %s', logline.time);
+				this.cache.events.unshift(logline);
+				this.io.emit('eventlogline', logline);
 			});
 			return this.mib.getData().then(() => {
 				let rest = http.createServer(this.app);

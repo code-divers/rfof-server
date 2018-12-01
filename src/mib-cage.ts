@@ -1,4 +1,4 @@
-import { Cage, CageGroup, GroupType, GroupRedundancy, GroupStatus, CageModule, ModuleType, ModuleStatus, ModuleStatusLED, LNAStatus, BiasTState, LaserStatus, MeasRfLevel, SetDefaults, RestoreFactory, EventLogItem, EventLevel, PowerSupply, PowerStatus, SnmpVarBind, TrapReciver, TrapLevelFilter, MonPlan, RfLinkTest, CAGE_VARBINDS, CAGE_MODULE_VARBINDS, POWER_VARBINDS, TRAPRECEIVERS_VARBINDS, CAGETRAPRECEIVERS_TABLE, CAGEGROUP_TABLE, CAGEMODULE_TABLE, CAGEEVENTS_TABLE, CAGE_GROUP_VARBINDS } from 'rfof-common';
+import { Cage, CageGroup, GroupType, GroupRedundancy, GroupStatus, CageModule, ModuleType, ModuleStatus, ModuleStatusLED, LNAStatus, BiasTState, LaserStatus, MeasRfLevel, SetDefaults, RestoreFactory, EventLogItem, EventLevel, PowerSupply, PowerStatus, SnmpVarBind, TrapReciver, TrapLevelFilter, MonPlan, RfLinkTest, CAGE_VARBINDS, CAGEEVENTS_VARBINDS, CAGE_MODULE_VARBINDS, POWER_VARBINDS, TRAPRECEIVERS_VARBINDS, CAGETRAPRECEIVERS_TABLE, CAGEGROUP_TABLE, CAGEMODULE_TABLE, CAGEEVENTS_TABLE, CAGE_GROUP_VARBINDS } from 'rfof-common';
 import { SNMP } from './snmp';
 import { Cache } from './cache';
 import { environment } from './environments/environment';
@@ -27,7 +27,33 @@ export class MIBCage extends EventEmitter {
 
 		let self = this;
 		this.snmpListener.messageEmitter.on('message', (message) => {
-			logger.debug('Recived a message %s from snmp listener', message);
+			let data = message.toString('ascii');
+			let match = data.match(/(critical|warning|change|notify|system),\s*([\w\W]*)/i);
+
+			if (match) {
+				let logline = new EventLogItem();
+				logline.time = new Date();
+				logline.level = EventLevel[match[1].toLowerCase()];
+				logline.detail = match[2];
+				logger.debug('Recived logline %s from %s', logline.detail);
+
+				this.interpretLogLine(logline);
+				if (logline.module) {
+					if (logline.value) {
+						let varbind = CAGE_MODULE_VARBINDS.find(item => {
+							let regExp = new RegExp(logline.property, 'i');
+							return item.name.match(regExp);
+						});
+						if (varbind) {
+							logline.module[varbind.name] = logline.value;
+						}
+					}
+					self.sampleModuleSensors(logline.module).then(() => {
+						self.emit('moduleupdate', logline.module);
+					});
+				}
+				self.emit('eventlogline', logline);
+			}
 		});
 	}
 
@@ -45,7 +71,7 @@ export class MIBCage extends EventEmitter {
 				self.emit('sensors', updatedModule);
 				if (updatedModule.rfLinkTest == RfLinkTest.on) {
 					if (self.sampleTimer) clearTimeout(self.sampleTimer);
-					self.sampleTimer = setTimeout(sample, 3000);
+					self.sampleTimer = setTimeout(sample, 500);
 				}
 			});
 		}, 500);
@@ -57,7 +83,7 @@ export class MIBCage extends EventEmitter {
 			self.sampleModuleSensors(module).then(updatedModule => {
 				if (updatedModule.monPlan == MonPlan.active) {
 					if (self.sampleTimer) clearTimeout(self.sampleTimer);
-					self.sampleTimer = setTimeout(sample, 3000);
+					self.sampleTimer = setTimeout(sample, 500);
 				}
 			});
 		}, 500);
@@ -68,7 +94,7 @@ export class MIBCage extends EventEmitter {
 	}
 
 	async sampleModuleSensors(module: CageModule) {
-		let sensors = ['lna', 'atten', 'optPower', 'biasT', 'laser', 'status', 'statusLED', 'rfLevel', 'rfLinkTest', 'rfTestTimer', 'measRfLevel', 'temp', 'optAlarmLevel', 'monPlan', 'monTimer', 'laser'];
+		let sensors = ['statusLED', 'optPower', 'rfLevel', 'rfLinkTest', 'rfTestTimer', 'measRfLevel', 'temp', 'monTimer'];
 		let varBinds = CAGE_MODULE_VARBINDS.filter((varbind) => {
 			return sensors.find((sensor) => {
 				return varbind.name == sensor;
@@ -81,7 +107,6 @@ export class MIBCage extends EventEmitter {
 		let values = [];
 		for (let varbind of varBinds) {
 			let value = await this.snmp.get(varbind);
-			console.log(varbind.name, varbind.value);
 			values.push(value);
 		}
 		values.map(varbind => {
@@ -143,10 +168,6 @@ export class MIBCage extends EventEmitter {
 			this.cageModules[index][varbind.name] = varbind.value;
 		}
 
-		if (module.rfLinkTest == RfLinkTest.off && module.monPlan == MonPlan.sleep) {
-			this.startDelayedSampler(module);
-		}
-
 		if (module.rfLinkTest == RfLinkTest.on) {
 			this.startRFTestSampler(module);
 		}
@@ -177,7 +198,7 @@ export class MIBCage extends EventEmitter {
 		} catch (err) {
 			console.log(err);
 		} finally {
-			this.emit('update', {
+			this.emit('flush', {
 				cage: this.cage,
 				power: this.power,
 				network: this.network,
@@ -189,9 +210,9 @@ export class MIBCage extends EventEmitter {
 			this.updateTimer = setTimeout(function sample() {
 				self.getData().then(() => {
 					if (self.updateTimer) clearTimeout(self.updateTimer);
-					self.updateTimer = setTimeout(sample, 60000);
+					self.updateTimer = setTimeout(sample, 900000);
 				});
-			}, 60000);
+			}, 900000);
 		}
 	}
 
@@ -356,9 +377,51 @@ export class MIBCage extends EventEmitter {
 				}
 				logitem[varbind.name] = value;
 			}
+
+			this.interpretLogLine(logitem);
+
 			cageEventlog.push(logitem);
 		}
 		this.cageEventlog = cageEventlog;
 		return cageEventlog;
+	}
+
+	async getLastEvent(): EventLogItem {
+		let logline = new EventLogItem();
+		for (let item of CAGEEVENTS_VARBINDS) {
+			item.index = 1;
+			let varbind = await this.snmp.get(item);
+			logline[varbind.name] = varbind.value;
+		}
+
+		this.interpretLogLine(logline);
+		return logline;
+	}
+
+	interpretLogLine(line: EventLogItem) {
+		let lineStyle1 = /Group\s*(\d),\s*Slot\s*(\d),\s*([\w]*)\s=\s*(\w*)\s*\((\d)\)/;
+		let lineStyle2 = /Group\s*(\d),\s*Slot\s*(\d),\s*([\w\W]*)/;
+		let lineStyle3 = /Group\s*(\d),\s*([\w\W]*)/;
+		let lineStyles = [lineStyle1, lineStyle2, lineStyle3];
+		for (let regex of lineStyles) {
+			let matches = line.detail.match(regex);
+			if (matches) {
+				line.group = this.cageGroups.find((item) => {
+					return item.index == matches[1].trim();
+				});
+				if (matches.length > 2) {
+					line.slot = matches[2].trim();
+					line.module = this.cageModules.find((item) => {
+						return item.slot == line.slot;
+					});
+				}
+
+				if (matches.length > 3) {
+					line.property = matches[3].trim();
+					line.value = matches[5];
+				}
+				break;
+			}
+		}
 	}
 }
