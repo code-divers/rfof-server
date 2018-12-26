@@ -1,5 +1,6 @@
-
 export const environment = {
 	production: true,
-	mock: false
+	mock: false,
+	snmpConfig: '/etc/RFoptic/CageManager.conf',
+	snmpDisableLog: true
 };

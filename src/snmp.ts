@@ -2,6 +2,8 @@ import * as snmp from 'net-snmp';
 import { SnmpVarBind, SnmpTableColumn, SnmpTable } from 'rfof-common';
 import { execSync, exec } from 'child_process';
 import { logger } from './logger';
+import * as fs from 'fs';
+import { environment } from './environments/environment';
 
 
 export class SNMP {
@@ -9,8 +11,23 @@ export class SNMP {
 	private server;
 	private commands = [];
 	constructor() {
-		this.community = 'cMtc-04_3159';
-		this.server = process.env.RFOF_CAGE_ADDRESS || 'localhost';
+
+	}
+
+	async start() {
+		return new Promise((resolve, reject) => {
+			fs.readFile(environment.snmpConfig, (err, data: any) => {
+				if (err) {
+					return reject(err);
+				}
+				let match = data.toString('utf8').match(/Community\s=\s([a-zA-Z\W\d\w]*);/);
+				if (match) {
+					this.community = match[1].trim();
+				}
+				this.server = process.env.RFOF_CAGE_ADDRESS || 'localhost';
+				return resolve(true);
+			});
+		});
 	}
 
 	queueCommand(command, callback) {
@@ -58,12 +75,13 @@ export class SNMP {
 					return reject(err);
 				} else {
 					let result = out;
-					// console.log(result);
+					// console.log(result); ^RFoF-Cage-MIB::(\w*)\s*=\s*INTEGER:[\s\w]*\((\d*)\)
 					let stringRegex = /^RFoF-Cage-MIB::(\w*)\s*=\s*STRING:\s*"([\w\s]*)"/;
 					let integerRegex = /^RFoF-Cage-MIB::(\w*)\s*=\s*INTEGER:\s*(\d*)/;
 					let integerRegexIdx = /^RFoF-Cage-MIB::(\w*)\s*[.\d]*\s*=\s*INTEGER:\s*\w*\((\d*)\)/;
 					let stringRegexIdx = /^RFoF-Cage-MIB::(\w*)\s*[.\d]*\s*=\s*STRING: "([\s\d\w\W]*)"/;
-					let regexSatements = [stringRegex, integerRegex, integerRegexIdx, stringRegexIdx];
+					let stringSystemRegexIdx = /^SNMPv2-MIB::(\w*)\s*[.\d]*\s*=\s*STRING:\s*([\s\d\w\W]*)/;
+					let regexSatements = [stringRegex, integerRegexIdx, integerRegex, stringRegexIdx, stringSystemRegexIdx];
 
 					varBind.value = null;
 					for (let regex of regexSatements) {
@@ -112,7 +130,20 @@ export class SNMP {
 
 	set(varbind: SnmpVarBind) {
 		return new Promise((resolve, reject) => {
-			let command = `snmpset -t 60 -Os -v2c -c ${this.community} ${this.server} RFoF-Cage-MIB::${varbind.systemName}.${varbind.index} ${varbind.type} ${varbind.value}`;
+			let varbindName = varbind.systemName;
+
+			if (varbind.index) {
+				varbindName += `.${varbind.index}`;
+			}
+			let varbindGroup = 'RFoF-Cage-MIB';
+			if (varbind.group) {
+				varbindGroup = varbind.group;
+			}
+			let varbindValue = varbind.value;
+			if (varbind.type == 'string') {
+				varbindValue = `'${varbind.value}'`;
+			}
+			let command = `snmpset -t 60 -Os -v2c -c ${this.community} ${this.server} ${varbindGroup}::${varbindName} ${varbind.type} ${varbindValue}`;
 			this.queueCommand(command, (err, out) => {
 				if (err) {
 					return reject(err);

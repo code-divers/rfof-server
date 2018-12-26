@@ -9,7 +9,6 @@ export class SNMPListener {
 
 	constructor() {
 		this.messageEmitter = new EventEmitter;
-		this.start();
 	}
 
 	start() {

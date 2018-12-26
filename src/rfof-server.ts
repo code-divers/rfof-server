@@ -61,17 +61,20 @@ export class RfofServer {
 				this.cache.events.unshift(logline);
 				this.io.emit('eventlogline', logline);
 			});
-			return this.mib.getData().then(() => {
-				let rest = http.createServer(this.app);
-				this.io = require('socket.io')(rest);
-				this.io.on('connection', (socket) => {
-					logger.info('Web socket user connected');
-					socket.on('disconnect', () => {
-						logger.info('Web socket user disconnected');
+
+			return this.mib.start().then(() => {
+				return this.mib.getData().then(() => {
+					let rest = http.createServer(this.app);
+					this.io = require('socket.io')(rest);
+					this.io.on('connection', (socket) => {
+						logger.info('Web socket user connected');
+						socket.on('disconnect', () => {
+							logger.info('Web socket user disconnected');
+						});
 					});
-				});
-				rest.listen(this.port, () => {
-					resolve(rest.address());
+					rest.listen(this.port, () => {
+						resolve(rest.address());
+					});
 				});
 			});
 		});
@@ -128,6 +131,15 @@ export class RfofServer {
 		});
 		app.post('/api/cage/group', (req, res) => {
 			this.mib.setCageGroupParameter(req.body.group).then(result => {
+				res.send({
+					data: result
+				});
+			}).catch(err => {
+				res.status(500).send({ error: err });
+			});
+		});
+		app.post('/api/cage/settings', (req, res) => {
+			this.mib.setCageSettingsParameter(req.body.settings).then(result => {
 				res.send({
 					data: result
 				});

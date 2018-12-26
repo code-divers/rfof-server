@@ -1,4 +1,4 @@
-import { Cage, CageGroup, GroupType, GroupRedundancy, GroupStatus, CageModule, ModuleType, ModuleStatus, ModuleStatusLED, LNAStatus, BiasTState, LaserStatus, MeasRfLevel, SetDefaults, RestoreFactory, EventLogItem, EventLevel, PowerSupply, PowerStatus, SnmpVarBind, TrapReciver, TrapLevelFilter, MonPlan, RfLinkTest, CAGE_VARBINDS, CAGEEVENTS_VARBINDS, CAGE_MODULE_VARBINDS, POWER_VARBINDS, TRAPRECEIVERS_VARBINDS, CAGETRAPRECEIVERS_TABLE, CAGEGROUP_TABLE, CAGEMODULE_TABLE, CAGEEVENTS_TABLE, CAGE_GROUP_VARBINDS } from 'rfof-common';
+import { Cage, CageSettings, LogfileStatus, CageGroup, GroupType, GroupRedundancy, GroupStatus, CageModule, ModuleType, ModuleStatus, ModuleStatusLED, LNAStatus, BiasTState, LaserStatus, MeasRfLevel, SetDefaults, RestoreFactory, EventLogItem, EventLevel, PowerSupply, PowerStatus, SnmpVarBind, TrapReciver, TrapLevelFilter, MonPlan, RfLinkTest, CAGE_VARBINDS, CAGE_SETTINGS_VARBINDS, CAGEEVENTS_VARBINDS, CAGE_MODULE_VARBINDS, POWER_VARBINDS, TRAPRECEIVERS_VARBINDS, CAGETRAPRECEIVERS_TABLE, CAGEGROUP_TABLE, CAGEMODULE_TABLE, CAGEEVENTS_TABLE, CAGE_GROUP_VARBINDS } from 'rfof-common';
 import { SNMP } from './snmp';
 import { Cache } from './cache';
 import { environment } from './environments/environment';
@@ -8,12 +8,12 @@ import { CAGE, CAGE_EVENTS, CAGE_GROUPS, CAGE_MODULES, CAGE_POWERSUPPLY, CAGE_TR
 import { logger } from './logger';
 
 export class MIBCage extends EventEmitter {
-	private snmp;
+	private snmp: SNMP;
 	private snmpListener: SNMPListener;
 	private sampleTimer;
 	private updateTimer;
 	private updateCacheTimer;
-	cage: Cage = new Cage();
+	cage: Cage;
 	power: PowerSupply[] = [];
 	network: TrapReciver[] = [];
 	cageGroups: CageGroup[] = [];
@@ -22,9 +22,9 @@ export class MIBCage extends EventEmitter {
 
 	constructor() {
 		super();
+		this.cage = new Cage();
 		this.snmp = new SNMP();
 		this.snmpListener = new SNMPListener();
-
 		let self = this;
 		this.snmpListener.messageEmitter.on('message', (message) => {
 			let data = message.toString('ascii');
@@ -55,6 +55,27 @@ export class MIBCage extends EventEmitter {
 				self.emit('eventlogline', logline);
 			}
 		});
+	}
+
+	public async start() {
+		await this.snmp.start();
+		await this.disableLogfile();
+		this.snmpListener.start();
+	}
+
+	private async disableLogfile() {
+		if (environment.snmpDisableLog) {
+			let varbind = CAGE_SETTINGS_VARBINDS.find((item) => {
+				return item.name == 'logfile';
+			});
+			await this.snmp.get(varbind);
+			console.log(varbind);
+			console.log(varbind.value, LogfileStatus.log);
+			if (varbind.value == LogfileStatus.log) {
+				varbind.value = LogfileStatus.suspendLog;
+				await this.snmp.set(varbind);
+			}
+		}
 	}
 
 	public startDelayedSampler(module: CageModule) {
@@ -127,22 +148,24 @@ export class MIBCage extends EventEmitter {
 			return item.index == item.index;
 		});
 
-		if (cageGroup.redundencySwitch != group.redundencySwitch) {
-				let groupColumns = CAGE_GROUP_VARBINDS;
-			let varBind = groupColumns.find(column => {
-				return column.name == 'redundencySwitch';
+		let fields = ['name', 'redundencySwitch'];
+
+		let varBinds = CAGE_GROUP_VARBINDS.filter(varbind => {
+			return fields.indexOf(varbind.name) > -1 && cageGroup[varbind.name] != group[varbind.name];
+		});
+		if (varBinds.length > 0) {
+			varBinds.map((varbind) => {
+				varbind.value = group[varbind.name];
+				varbind.index = group.index;
+				return varbind;
 			});
-			varBind.value = group.redundencySwitch;
-			varBind.index = group.index;
-			varBind.oid += '.' + group.index;
 
-			this.snmp = new SNMP();
-			let varBinds: SnmpVarBind[] = [varBind];
-			let result = await this.snmp.set(varBinds);
-			this.snmp.close();
+			for (let varbind of varBinds) {
+				await this.snmp.set(varbind);
+				cageGroup[varbind.name] = varbind.value;
+			}
 
-			cageGroup = group;
-			return result;
+			return varBinds;
 		}
 		return null;
 	}
@@ -176,6 +199,18 @@ export class MIBCage extends EventEmitter {
 		}
 
 		return varBinds;
+	}
+
+	async setCageSettingsParameter(settings: CageSettings) {
+		let varbinds = CAGE_SETTINGS_VARBINDS;
+		for (let varbind of varbinds) {
+			if (this.cage.settings[varbind.name] != settings[varbind.name]) {
+				varbind.value = settings[varbind.name];
+				await this.snmp.set(varbind);
+				this.cage.settings[varbind.name] = varbind.value;
+			}
+		}
+		return varbinds;
 	}
 
 	async getData() {
@@ -222,15 +257,31 @@ export class MIBCage extends EventEmitter {
 			let varbind = await this.snmp.get(item);
 			values.push(varbind);
 		}
-		values.map(varBind => {
-			let value = varBind.value;
-			let type = typeof this.cage[varBind.name];
+		values.map(varbind => {
+			let value = varbind.value;
+			let type = typeof this.cage[varbind.name];
 			switch (type) {
 				case 'number':
-					value = Number(varBind.value);
+					value = Number(varbind.value);
 					break;
 			}
-			this.cage[varBind.name] = varBind.value;
+			this.cage[varbind.name] = varbind.value;
+		});
+		let settingsValues = [];
+		for (let item of CAGE_SETTINGS_VARBINDS) {
+			let varbind = await this.snmp.get(item);
+			settingsValues.push(varbind);
+		}
+		this.cage.settings = new CageSettings();
+		settingsValues.map(varbind => {
+			let value = varbind.value;
+			let type = varbind.type;
+			switch (type) {
+				case 'number':
+					value = Number(varbind.value);
+					break;
+			}
+			this.cage.settings[varbind.name] = varbind.value;
 		});
 		return this.cage;
 	}
@@ -269,7 +320,7 @@ export class MIBCage extends EventEmitter {
 
 	private async getCageTrapReciversAsync() {
 		let cageTrapRecivers: TrapReciver[] = [];
-		let table = await this.snmp.table(CAGETRAPRECEIVERS_TABLE);
+		let table: any = await this.snmp.table(CAGETRAPRECEIVERS_TABLE);
 		for (let row of table) {
 			let trapReciver: TrapReciver = new TrapReciver();
 			for (let varbind of row.items) {
@@ -288,7 +339,7 @@ export class MIBCage extends EventEmitter {
 
 	private async getCageGroupsAsync() {
 		let cageGroups: CageGroup[] = [];
-		let table = await this.snmp.table(CAGEGROUP_TABLE);
+		let table: any = await this.snmp.table(CAGEGROUP_TABLE);
 		for (let row of table) {
 			let cageGroup = new CageGroup();
 			for (let varbind of row.items) {
@@ -313,7 +364,7 @@ export class MIBCage extends EventEmitter {
 
 	private async getCageModulsAsync() {
 		let cageModules: CageModule[] = [];
-		let table = await this.snmp.table(CAGEMODULE_TABLE);
+		let table: any = await this.snmp.table(CAGEMODULE_TABLE);
 		for (let row of table) {
 			let cageModule = new CageModule();
 			for (let varbind of row.items) {
@@ -367,7 +418,7 @@ export class MIBCage extends EventEmitter {
 
 	private async getCageEventsAsync() {
 		let cageEventlog: EventLogItem[] = [];
-		let table = await this.snmp.table(CAGEEVENTS_TABLE);
+		let table: any = await this.snmp.table(CAGEEVENTS_TABLE);
 		for (let row of table) {
 			let logitem = new EventLogItem();
 			for (let varbind of row.items) {
@@ -390,7 +441,7 @@ export class MIBCage extends EventEmitter {
 		let logline = new EventLogItem();
 		for (let item of CAGEEVENTS_VARBINDS) {
 			item.index = 1;
-			let varbind = await this.snmp.get(item);
+			let varbind: any = await this.snmp.get(item);
 			logline[varbind.name] = varbind.value;
 		}
 
@@ -409,14 +460,14 @@ export class MIBCage extends EventEmitter {
 				line.group = this.cageGroups.find((item) => {
 					return item.index == matches[1].trim();
 				});
-				if (matches.length > 2) {
+				if (matches.length > 3) {
 					line.slot = matches[2].trim();
 					line.module = this.cageModules.find((item) => {
 						return item.slot == line.slot;
 					});
 				}
 
-				if (matches.length > 3) {
+				if (matches.length > 4) {
 					line.property = matches[3].trim();
 					line.value = matches[5];
 				}
