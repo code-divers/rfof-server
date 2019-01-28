@@ -5,8 +5,10 @@ let cors = require('cors');
 let path = require('path');
 let bodyParser = require('body-parser');
 
+import { environment } from './environments/environment';
 import { MIBCage } from './mib-cage';
 import { logger } from './logger';
+import { CageState } from 'rfof-common';
 
 export class RfofServer {
 	app;
@@ -28,7 +30,8 @@ export class RfofServer {
 			network: null,
 			groups: null,
 			modules: null,
-			events: null
+			events: null,
+			state: null,
 		};
 	}
 	start() {
@@ -36,7 +39,7 @@ export class RfofServer {
 			this.mib.on('sensors', (module) => {
 				logger.debug('sensors updated for module %s in slot %s', module.name, module.slot);
 				this.cache.modules.map((item) => {
-					if (item.slot == module.slot && item.name == module.name) {
+					if (item.slot == module.slot) {
 						item = module;
 					}
 				});
@@ -45,7 +48,7 @@ export class RfofServer {
 			this.mib.on('moduleupdate', (module) => {
 				logger.debug('module %s at slot %s updated', module.name, module.slot);
 				let idx = this.cache.modules.findIndex(item => {
-					item.slot == module.slot && item.name == module.name;
+					item.slot == module.slot;
 				});
 				if (idx > -1) {
 					this.cache.modules[idx] = module;
@@ -58,23 +61,28 @@ export class RfofServer {
 			});
 			this.mib.on('eventlogline', (logline) => {
 				logger.debug('new logline added at %s', logline.time);
-				this.cache.events.unshift(logline);
-				this.io.emit('eventlogline', logline);
+				if (this.cache.events) {
+					this.cache.events.unshift(logline);
+					this.io.emit('eventlogline', logline);
+				}
 			});
 
-			return this.mib.start().then(() => {
-				return this.mib.getData().then(() => {
-					let rest = http.createServer(this.app);
-					this.io = require('socket.io')(rest);
-					this.io.on('connection', (socket) => {
-						logger.info('Web socket user connected');
-						socket.on('disconnect', () => {
-							logger.info('Web socket user disconnected');
-						});
-					});
-					rest.listen(this.port, () => {
-						resolve(rest.address());
-					});
+			this.mib.on('cageStateChanged', (state: CageState) => {
+				this.cache.state = state;
+				this.io.emit('cageStateChanged', state);
+			});
+
+			let rest = http.createServer(this.app);
+			this.io = require('socket.io')(rest);
+			this.io.on('connection', (socket) => {
+				logger.info('Web socket user connected');
+				socket.on('disconnect', () => {
+					logger.info('Web socket user disconnected');
+				});
+			});
+			rest.listen(this.port, () => {
+				this.mib.start().then(() => {
+					resolve(rest.address());
 				});
 			});
 		});
@@ -82,7 +90,8 @@ export class RfofServer {
 
 	private setStaticRoute() {
 		let app = this.app;
-		app.use('/', express.static(path.join(__dirname, '/../../rfof-client/dist/rfof')));
+		console.log(path.join(__dirname, environment.clientFolder));
+		app.use('/', express.static(path.join(__dirname, environment.clientFolder)));
 	}
 
 	private setApiRoute() {
@@ -118,6 +127,11 @@ export class RfofServer {
 		app.get('/api/cage/events', (req, res) => {
 			res.send({
 				data: this.cache.events
+			});
+		});
+		app.get('/api/cage/state', (req, res) => {
+			res.send({
+				data: this.cache.state
 			});
 		});
 		app.post('/api/cage/module', (req, res) => {

@@ -1,0 +1,13 @@
+[Unit]
+Description=rfof server service
+After=snmpd.service
+
+[Service]
+Environment="RFOF_PORT=20080"
+Type=simple
+WorkingDirectory=/etc/RFoptic/rfof-server/dist
+ExecStart=/usr/bin/node index.js
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

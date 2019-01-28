@@ -8,7 +8,7 @@
     "clean": "rimraf dist",
     "cleanEnv": "rimraf src/environments/environment.ts",
     "build": "npm run clean && npm run lint && gulp copy-environment-dev && tsc -p tsconfig.json",
-    "build:prod": "npm run cleanEnv && gulp copy-environment-prod && npm run clean && npm run lint && tsc -p tsconfig.json",
+    "build-prod": "npm run cleanEnv && gulp copy-environment-prod && npm run clean && npm run lint && tsc -p tsconfig.json",
     "uglify": "uglifyjs-folder dist --output dist/all.min.js --pattern \"**/*.js,!**/*min.js\"",
     "browserify": "browserify -e dist/all.min.js --standalone TsProjectSeed -o dist/all.min.js",
     "build:run": "tsc -p tsconfig.json && node dist/index.js",
@@ -81,6 +81,7 @@
     "node-cache": "^4.2.0",
     "rfof-common": "file:../rfof-common/",
     "socket.io": "^2.1.1",
+    "tslib": "^1.9.3",
     "winston": "^3.1.0"
   }
 }

@@ -1,16 +1,19 @@
-import { Cage, CageSettings, LogfileStatus, CageGroup, GroupType, GroupRedundancy, GroupStatus, CageModule, ModuleType, ModuleStatus, ModuleStatusLED, LNAStatus, BiasTState, LaserStatus, MeasRfLevel, SetDefaults, RestoreFactory, EventLogItem, EventLevel, PowerSupply, PowerStatus, SnmpVarBind, TrapReciver, TrapLevelFilter, MonPlan, RfLinkTest, CAGE_VARBINDS, CAGE_SETTINGS_VARBINDS, CAGEEVENTS_VARBINDS, CAGE_MODULE_VARBINDS, POWER_VARBINDS, TRAPRECEIVERS_VARBINDS, CAGETRAPRECEIVERS_TABLE, CAGEGROUP_TABLE, CAGEMODULE_TABLE, CAGEEVENTS_TABLE, CAGE_GROUP_VARBINDS } from 'rfof-common';
+import { Cage, CageState, CageSettings, LogfileStatus, CageGroup, GroupType, GroupRedundancy, GroupStatus, CageModule, ModuleType, ModuleStatus, ModuleStatusLED, LNAStatus, BiasTState, LaserStatus, MeasRfLevel, SetDefaults, RestoreFactory, EventLogItem, EventLevel, PowerSupply, PowerStatus, SnmpVarBind, TrapReciver, TrapLevelFilter, MonPlan, RfLinkTest, CAGE_VARBINDS, CAGE_SETTINGS_VARBINDS, CAGEEVENTS_VARBINDS, CAGE_MODULE_VARBINDS, POWER_VARBINDS, TRAPRECEIVERS_VARBINDS, CAGETRAPRECEIVERS_TABLE, CAGEGROUP_TABLE, CAGEMODULE_TABLE, CAGEEVENTS_TABLE, CAGE_GROUP_VARBINDS } from 'rfof-common';
 import { SNMP } from './snmp';
 import { Cache } from './cache';
 import { environment } from './environments/environment';
 import { EventEmitter } from 'events';
 import { SNMPListener } from './snmp-listener';
+import { SNMPGuard } from './snmp-guard';
 import { CAGE, CAGE_EVENTS, CAGE_GROUPS, CAGE_MODULES, CAGE_POWERSUPPLY, CAGE_TRAPRECIVERS } from 'rfof-common';
 import { logger } from './logger';
 
 export class MIBCage extends EventEmitter {
 	private snmp: SNMP;
 	private snmpListener: SNMPListener;
+	private snmpGuard: SNMPGuard;
 	private sampleTimer;
+	private moduleSampleTimer;
 	private updateTimer;
 	private updateCacheTimer;
 	cage: Cage;
@@ -25,6 +28,7 @@ export class MIBCage extends EventEmitter {
 		this.cage = new Cage();
 		this.snmp = new SNMP();
 		this.snmpListener = new SNMPListener();
+		this.snmpGuard = new SNMPGuard(this.snmp);
 		let self = this;
 		this.snmpListener.messageEmitter.on('message', (message) => {
 			let data = message.toString('ascii');
@@ -48,11 +52,18 @@ export class MIBCage extends EventEmitter {
 							logline.module[varbind.name] = logline.value;
 						}
 					}
-					self.sampleModuleSensors(logline.module).then(() => {
-						self.emit('moduleupdate', logline.module);
-					});
+					self.startModuleUpdateSampler(logline.module, 5);
 				}
 				self.emit('eventlogline', logline);
+			}
+		});
+		this.snmpGuard.messageEmitter.on('cageStateChanged', (state: CageState) => {
+			if (state == CageState.on) {
+				this.getData().then(() => {
+					self.emit('cageStateChanged', state);
+				});
+			} else {
+				self.emit('cageStateChanged', state);
 			}
 		});
 	}
@@ -61,6 +72,7 @@ export class MIBCage extends EventEmitter {
 		await this.snmp.start();
 		await this.disableLogfile();
 		this.snmpListener.start();
+		this.snmpGuard.start();
 	}
 
 	private async disableLogfile() {
@@ -69,8 +81,6 @@ export class MIBCage extends EventEmitter {
 				return item.name == 'logfile';
 			});
 			await this.snmp.get(varbind);
-			console.log(varbind);
-			console.log(varbind.value, LogfileStatus.log);
 			if (varbind.value == LogfileStatus.log) {
 				varbind.value = LogfileStatus.suspendLog;
 				await this.snmp.set(varbind);
@@ -112,6 +122,21 @@ export class MIBCage extends EventEmitter {
 
 	public showRFLevelSampler(module: CageModule) {
 		return this.sampleModuleSensors(module);
+	}
+
+	public startModuleUpdateSampler(module: CageModule, iterations) {
+		let self = this;
+		this.moduleSampleTimer = setTimeout(function sample(left) {
+			self.sampleModuleSensors(module).then(updatedModule => {
+				left = left ? left : iterations;
+				if (left > 0) {
+					left--;
+
+					if (self.moduleSampleTimer) clearTimeout(self.moduleSampleTimer);
+					self.moduleSampleTimer = setTimeout(sample, 500, left);
+				}
+			});
+		}, 500);
 	}
 
 	async sampleModuleSensors(module: CageModule) {
@@ -239,7 +264,8 @@ export class MIBCage extends EventEmitter {
 				network: this.network,
 				groups: this.cageGroups,
 				modules: this.cageModules,
-				events: this.cageEventlog
+				events: this.cageEventlog,
+				state: this.getCageState()
 			});
 			let self = this;
 			this.updateTimer = setTimeout(function sample() {
@@ -408,7 +434,7 @@ export class MIBCage extends EventEmitter {
 			let res = /^(\d).(\d)/.exec(row.index);
 			if (res) {
 				let groupIndex = Number(res[1]) - 1;
-				cageModule.group = this.cageGroups[groupIndex];
+				this.cageGroups[groupIndex].modules.push(cageModule);
 			}
 			cageModules.push(cageModule);
 		}
@@ -428,7 +454,6 @@ export class MIBCage extends EventEmitter {
 				}
 				logitem[varbind.name] = value;
 			}
-
 			this.interpretLogLine(logitem);
 
 			cageEventlog.push(logitem);
@@ -450,8 +475,8 @@ export class MIBCage extends EventEmitter {
 	}
 
 	interpretLogLine(line: EventLogItem) {
-		let lineStyle1 = /Group\s*(\d),\s*Slot\s*(\d),\s*([\w]*)\s=\s*(\w*)\s*\((\d)\)/;
-		let lineStyle2 = /Group\s*(\d),\s*Slot\s*(\d),\s*([\w\W]*)/;
+		let lineStyle1 = /Group\s*(\d),\s*Slot\((\d)\)\s*(\w*),\s*([\w]*)\s=\s*(\w*)\s*\((\d)\)/;
+		let lineStyle2 = /Group\s*(\d),\s*Slot\((\d)\)\s*(\w*),\s*([\w\W]*)/;
 		let lineStyle3 = /Group\s*(\d),\s*([\w\W]*)/;
 		let lineStyles = [lineStyle1, lineStyle2, lineStyle3];
 		for (let regex of lineStyles) {
@@ -467,12 +492,16 @@ export class MIBCage extends EventEmitter {
 					});
 				}
 
-				if (matches.length > 4) {
-					line.property = matches[3].trim();
-					line.value = matches[5];
+				if (matches.length > 5) {
+					line.property = matches[4].trim();
+					line.value = matches[6];
 				}
 				break;
 			}
 		}
+	}
+
+	getCageState() {
+		return this.snmpGuard.state;
 	}
 }
