@@ -1,4 +1,4 @@
-import { Cage, CageState, CageSettings, LogfileStatus, CageGroup, GroupType, GroupRedundancy, GroupStatus, CageModule, ModuleType, ModuleStatus, ModuleStatusLED, LNAStatus, BiasTState, LaserStatus, MeasRfLevel, SetDefaults, RestoreFactory, EventLogItem, EventLevel, PowerSupply, PowerStatus, SnmpVarBind, TrapReciver, TrapLevelFilter, MonPlan, RfLinkTest, CAGE_VARBINDS, CAGE_SETTINGS_VARBINDS, CAGEEVENTS_VARBINDS, CAGE_MODULE_VARBINDS, POWER_VARBINDS, TRAPRECEIVERS_VARBINDS, CAGETRAPRECEIVERS_TABLE, CAGEGROUP_TABLE, CAGEMODULE_TABLE, CAGEEVENTS_TABLE, CAGE_GROUP_VARBINDS } from 'rfof-common';
+import { Cage, CageState, CageSettings, CageSlot, SlotStatus, LogfileStatus, CageGroup, GroupType, GroupRedundancy, GroupStatus, CageModule, ModuleType, ModuleStatus, ModuleStatusLED, LNAStatus, BiasTState, LaserStatus, MeasRfLevel, SetDefaults, RestoreFactory, EventLogItem, EventLevel, PowerSupply, PowerStatus, SnmpVarBind, TrapReciver, TrapLevelFilter, MonPlan, RfLinkTest, CAGE_VARBINDS, CAGE_SETTINGS_VARBINDS, CAGEEVENTS_VARBINDS, CAGE_MODULE_VARBINDS, POWER_VARBINDS, TRAPRECEIVERS_VARBINDS, CAGETRAPRECEIVERS_TABLE, CAGEGROUP_TABLE, CAGEMODULE_TABLE, CAGEEVENTS_TABLE, CAGE_GROUP_VARBINDS } from 'rfof-common';
 import { SNMP } from './snmp';
 import { Cache } from './cache';
 import { environment } from './environments/environment';
@@ -30,36 +30,12 @@ export class MIBCage extends EventEmitter {
 		this.snmpListener = new SNMPListener();
 		this.snmpGuard = new SNMPGuard(this.snmp);
 		let self = this;
-		this.snmpListener.messageEmitter.on('message', (message) => {
-			let data = message.toString('ascii');
-			let match = data.match(/(critical|warning|change|notify|system),\s*([\w\W]*)/i);
-
-			if (match) {
-				let logline = new EventLogItem();
-				logline.time = new Date();
-				logline.level = EventLevel[match[1].toLowerCase()];
-				logline.detail = match[2];
-				logger.debug('Recived logline %s from %s', logline.detail);
-
-				this.interpretLogLine(logline);
-				if (logline.module) {
-					if (logline.value) {
-						let varbind = CAGE_MODULE_VARBINDS.find(item => {
-							let regExp = new RegExp(logline.property, 'i');
-							return item.name.match(regExp);
-						});
-						if (varbind) {
-							logline.module[varbind.name] = logline.value;
-						}
-					}
-					self.startModuleUpdateSampler(logline.module, 5);
-				}
-				self.emit('eventlogline', logline);
-			}
+		this.snmpListener.messageEmitter.on('message', async(message) => {
+			await self.handleMessage(message);
 		});
 		this.snmpGuard.messageEmitter.on('cageStateChanged', (state: CageState) => {
 			if (state == CageState.on) {
-				this.getData().then(() => {
+				self.getData().then(() => {
 					self.emit('cageStateChanged', state);
 				});
 			} else {
@@ -73,6 +49,53 @@ export class MIBCage extends EventEmitter {
 		await this.disableLogfile();
 		this.snmpListener.start();
 		this.snmpGuard.start();
+	}
+
+	public async testTrap(message) {
+		return await this.handleMessage(message);
+	}
+
+	private async handleMessage(message) {
+		let data = message.toString('ascii');
+		let match = data.match(/(critical|warning|change|notify|system|Notification),\s*([\w\W]*)/i);
+		if (match) {
+			let logline = new EventLogItem();
+			logline.time = new Date();
+			let level = match[1];
+			if (level == 'Notification') {
+				level = 'notify';
+			}
+			logline.level = EventLevel[level.toLowerCase()];
+			logline.detail = match[2];
+			logger.debug('Recived logline %s from %s', logline.detail);
+
+			this.interpretLogLine(logline);
+			if (logline.psu != null) {
+				this.power = logline.psu;
+				this.emit('flush', {
+					power: this.power
+				});
+			}
+			if (logline.slot != null) {
+				logline.module = this.cageModules.find((item) => {
+					return item.slot == logline.slot;
+				});
+				if (!logline.module) {
+					await this.getCageModulsAsync();
+				}
+			}
+			if (logline.module) {
+				if (logline.value == 'missing or communication failure') {
+					logline.module.slotStatus = SlotStatus.out;
+				} else if (logline.value == 'added module') {
+					logline.module.slotStatus = SlotStatus.in;
+				}
+				this.emit('slotStatusChanged', logline.module);
+				this.startModuleUpdateSampler(logline.module, 5);
+			}
+			this.emit('eventlogline', logline);
+			return logline;
+		}
 	}
 
 	private async disableLogfile() {
@@ -126,14 +149,12 @@ export class MIBCage extends EventEmitter {
 
 	public startModuleUpdateSampler(module: CageModule, iterations) {
 		let self = this;
-		this.moduleSampleTimer = setTimeout(function sample(left) {
+		setTimeout(function sample(left) {
 			self.sampleModuleSensors(module).then(updatedModule => {
-				left = left ? left : iterations;
+				left = left != null ? left : iterations;
 				if (left > 0) {
 					left--;
-
-					if (self.moduleSampleTimer) clearTimeout(self.moduleSampleTimer);
-					self.moduleSampleTimer = setTimeout(sample, 500, left);
+					self.moduleSampleTimer = setTimeout(sample, 1000, left);
 				}
 			});
 		}, 500);
@@ -146,12 +167,9 @@ export class MIBCage extends EventEmitter {
 				return varbind.name == sensor;
 			}) != null;
 		});
-		varBinds.map(varbind => {
-			varbind.index = module.index;
-			return varbind;
-		});
 		let values = [];
 		for (let varbind of varBinds) {
+			varbind.index = module.index;
 			let value = await this.snmp.get(varbind);
 			values.push(value);
 		}
@@ -201,7 +219,7 @@ export class MIBCage extends EventEmitter {
 		});
 		let currentModule = this.cageModules[index];
 
-		let fields = ['lna', 'atten', 'laser', 'measRfLevel', 'rfLinkTest', 'rfLinkTestTime', 'monPlan', 'monInterval'];
+		let fields = ['lna', 'atten', 'laser', 'measRfLevel', 'rfLinkTest', 'rfLinkTestTime', 'monPlan', 'monInterval', 'optPower'];
 
 		let varBinds = CAGE_MODULE_VARBINDS.filter(varbind => {
 			return fields.indexOf(varbind.name) > -1 && currentModule[varbind.name] != module[varbind.name];
@@ -321,7 +339,8 @@ export class MIBCage extends EventEmitter {
 		if (values.length > 0) {
 			let value = values[0].value;
 			let powerSupplies: PowerSupply[] = [];
-			for (let char of value) {
+			for (let i = 0; i < value.length; i++) {
+				let char = value.charAt(i);
 				let status: PowerStatus;
 				switch (char) {
 					case '0':
@@ -336,6 +355,7 @@ export class MIBCage extends EventEmitter {
 						break;
 				}
 				powerSupplies.push({
+					slot: i + 1,
 					status: status
 				});
 			}
@@ -475,8 +495,44 @@ export class MIBCage extends EventEmitter {
 	}
 
 	interpretLogLine(line: EventLogItem) {
-		let lineStyle1 = /Group\s*(\d),\s*Slot\((\d)\)\s*(\w*),\s*([\w]*)\s=\s*(\w*)\s*\((\d)\)/;
-		let lineStyle2 = /Group\s*(\d),\s*Slot\((\d)\)\s*(\w*),\s*([\w\W]*)/;
+		let lineStyle = /Added\s*module\s*type\s*([\w-]*)\s*S\/N\s*(\d*)\s*in\s*slot\s*([\d]*)/;
+		let matches = line.detail.match(lineStyle);
+		if (matches) {
+			line.slot = matches[3];
+			line.value = 'added module';
+			return;
+		}
+
+		lineStyle = /PSU\s*(\d)\s*(is|has)\s*(OK|Not Installed|Failed)/;
+		let lineStyle_g = /PSU\s*(\d)\s*(is|has)\s*(OK|Not Installed|Failed)/g;
+		matches = line.detail.match(lineStyle_g);
+		if (matches) {
+			let power: PowerSupply = [];
+			for (let match of matches) {
+				let psuMatch = match.match(lineStyle);
+				let powerSupply = new PowerSupply();
+				powerSupply.slot = psuMatch[1];
+				switch (psuMatch[3]) {
+					case "OK":
+						powerSupply.status = PowerStatus.ok;
+						break;
+
+					case "Failed":
+						powerSupply.status = PowerStatus.failure;
+						break;
+					default:
+					case "Not Installed":
+						powerSupply.status = PowerStatus.unknown;
+						break;
+				}
+				power.push(powerSupply);
+			}
+			line.psu = power;
+			return;
+		}
+
+		let lineStyle1 = /Group\s*(\d),\s*Slot\((\d*)\)\s*(\w*),\s*([\w]*)\s=\s*(\w*)\s*\((\d)\)/;
+		let lineStyle2 = /Group\s*(\d),\s*Slot\((\d*)\)\s*(\w*),\s*([\w\W]*)/;
 		let lineStyle3 = /Group\s*(\d),\s*([\w\W]*)/;
 		let lineStyles = [lineStyle1, lineStyle2, lineStyle3];
 		for (let regex of lineStyles) {
@@ -487,14 +543,13 @@ export class MIBCage extends EventEmitter {
 				});
 				if (matches.length > 3) {
 					line.slot = matches[2].trim();
-					line.module = this.cageModules.find((item) => {
-						return item.slot == line.slot;
-					});
 				}
 
 				if (matches.length > 5) {
 					line.property = matches[4].trim();
 					line.value = matches[6];
+				} else if (matches.length > 4) {
+					line.value = matches[4];
 				}
 				break;
 			}

@@ -67,6 +67,11 @@ export class RfofServer {
 				}
 			});
 
+			this.mib.on('slotStatusChanged', (module) => {
+				logger.debug('slot status changed %s', module);
+				this.io.emit('slotStatusChanged', module);
+			});
+
 			this.mib.on('cageStateChanged', (state: CageState) => {
 				this.cache.state = state;
 				this.io.emit('cageStateChanged', state);
@@ -132,6 +137,25 @@ export class RfofServer {
 		app.get('/api/cage/state', (req, res) => {
 			res.send({
 				data: this.cache.state
+			});
+		});
+		app.get('/api/test/:message', (req, res) => {
+			let message = null;
+			switch (req.params.message) {
+				case '1':
+					message = 'Warning, Added module type RFoF3T5FR-PA-11 S/N 80322625 in slot 3';
+					break;
+				case '2':
+					message = 'Critical, Error: Group 2, Slot(3) RFin1, missing or communication failure';
+					break;
+				case '3':
+					message = 'Change, Set Group 2, Slot(4) RFin2, Laser = off(0)';
+					break;
+			}
+			this.mib.testTrap(message).then((result) => {
+				res.send({
+					data: result
+				});
 			});
 		});
 		app.post('/api/cage/module', (req, res) => {

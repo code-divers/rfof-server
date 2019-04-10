@@ -20,7 +20,7 @@ export class SNMP {
 				if (err) {
 					return reject(err);
 				}
-				let match = data.toString('utf8').match(/Community\s=\s([a-zA-Z\W\d\w]*);/);
+				let match = data.toString('utf8').match(/wcommunity\s*([a-zA-Z\d\w-]*)\s*default/);
 				if (match) {
 					this.community = match[1].trim();
 				}
@@ -66,12 +66,14 @@ export class SNMP {
 
 	get(varBind: SnmpVarBind) {
 		return new Promise((resolve, reject) => {
-			let command = `snmpget -t 60 -c ${this.community} -v 2c ${this.server} ${varBind.oid}`;
-			if (varBind.index) {
+			let command = `snmpget -t 10 -c ${this.community} -v 2c ${this.server} ${varBind.oid}`;
+			if (varBind.index != null) {
 				command += `.${varBind.index}`;
 			}
-			this.queueCommand(command, (err, out) => {
+			exec(command, (err, out) => {
+				logger.debug('Executed command %s with result %s', command, out);
 				if (err) {
+					logger.error('failed execute snmp command %s with err %s', command, err);
 					return reject(err);
 				} else {
 					let result = out;
@@ -100,8 +102,9 @@ export class SNMP {
 	table(schema: SnmpTable) {
 		return new Promise((resolve, reject) => {
 			let table = [];
-			let command = `snmptable -t 60 -v 2c -c ${this.community} -Ci -Os ${this.server} RFoF-Cage-MIB::${schema.systemName}`;
-			this.queueCommand(command, (err, out) => {
+			let command = `snmptable -t 10 -v 2c -c ${this.community} -Ci -Os ${this.server} RFoF-Cage-MIB::${schema.systemName}`;
+			exec(command, (err, out) => {
+				logger.debug('Executed command %s with result %s', command, out);
 				if (err) {
 					return reject(err);
 				} else {
@@ -132,7 +135,7 @@ export class SNMP {
 		return new Promise((resolve, reject) => {
 			let varbindName = varbind.systemName;
 
-			if (varbind.index) {
+			if (varbind.index != null) {
 				varbindName += `.${varbind.index}`;
 			}
 			let varbindGroup = 'RFoF-Cage-MIB';
@@ -143,8 +146,9 @@ export class SNMP {
 			if (varbind.type == 'string') {
 				varbindValue = `'${varbind.value}'`;
 			}
-			let command = `snmpset -t 60 -Os -v2c -c ${this.community} ${this.server} ${varbindGroup}::${varbindName} ${varbind.type} ${varbindValue}`;
-			this.queueCommand(command, (err, out) => {
+			let command = `snmpset -t 10 -Os -v2c -c ${this.community} ${this.server} ${varbindGroup}::${varbindName} ${varbind.type} ${varbindValue}`;
+			exec(command, (err, out) => {
+				logger.debug('Executed command %s with result %s', command, out);
 				if (err) {
 					return reject(err);
 				} else {
