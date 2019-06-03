@@ -56,7 +56,7 @@ export class RfofServer {
 				}
 			});
 			this.mib.on('flush', (data) => {
-				logger.debug('MIB cage data flushed', data);
+				logger.info('MIB cage data flushed', data);
 				this.cache = {...this.cache, ...data};
 			});
 			this.mib.on('eventlogline', (logline) => {
@@ -143,13 +143,16 @@ export class RfofServer {
 			let message = null;
 			switch (req.params.message) {
 				case '1':
-					message = 'Warning, Added module type RFoF3T5FR-PA-11 S/N 80322625 in slot 3';
+					message = 'critical, Failure: Group 2, Slot(3) RFin1, Optical signal loss';
 					break;
 				case '2':
-					message = 'Critical, Error: Group 2, Slot(3) RFin1, missing or communication failure';
+					message = 'notify, Recovery: Group 1, Slot(2) RF3, Optical signal restored';
 					break;
 				case '3':
-					message = 'Change, Set Group 2, Slot(4) RFin2, Laser = off(0)';
+					message = 'critical, Failure: Group 1, Slot(2) RF3, Optical signal loss';
+					break;
+				case '4':
+					message = 'notify, Recovery: Group 2, Slot(3) RFin1, Optical signal restored';
 					break;
 			}
 			this.mib.testTrap(message).then((result) => {
@@ -157,6 +160,23 @@ export class RfofServer {
 					data: result
 				});
 			});
+		});
+		app.get('/api/cage/module/:slot', (req, res) => {
+			const idx = this.cache.modules.findIndex(item => {
+				return Number(item.slot) == req.params.slot;
+			});
+			if (idx > -1) {
+				const module = this.cache.modules[idx];
+				this.mib.sampleModuleSensors(module).then(result => {
+					res.send({
+						data: result
+					});
+				}).catch(err => {
+					res.status(500).send({ error: err });
+				});
+			} else {
+				res.status(500).send({ error: `no module found in slot ${req.params.slot}` });
+			}
 		});
 		app.post('/api/cage/module', (req, res) => {
 			this.mib.setModuleParameter(req.body.module).then(result => {

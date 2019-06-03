@@ -67,7 +67,7 @@ export class MIBCage extends EventEmitter {
 			}
 			logline.level = EventLevel[level.toLowerCase()];
 			logline.detail = match[2];
-			logger.debug('Recived logline %s from %s', logline.detail);
+			logger.info('Recived logline %s', logline.detail);
 
 			this.interpretLogLine(logline);
 			if (logline.psu != null) {
@@ -84,6 +84,7 @@ export class MIBCage extends EventEmitter {
 					await this.getCageModulsAsync();
 				}
 			}
+
 			if (logline.module) {
 				if (logline.value == 'missing or communication failure') {
 					logline.module.slotStatus = SlotStatus.out;
@@ -91,7 +92,7 @@ export class MIBCage extends EventEmitter {
 					logline.module.slotStatus = SlotStatus.in;
 				}
 				this.emit('slotStatusChanged', logline.module);
-				this.startModuleUpdateSampler(logline.module, 5);
+				await this.startModuleUpdateSampler(logline.module, 1);
 			}
 			this.emit('eventlogline', logline);
 			return logline;
@@ -147,21 +148,18 @@ export class MIBCage extends EventEmitter {
 		return this.sampleModuleSensors(module);
 	}
 
-	public startModuleUpdateSampler(module: CageModule, iterations) {
-		let self = this;
-		setTimeout(function sample(left) {
-			self.sampleModuleSensors(module).then(updatedModule => {
-				left = left != null ? left : iterations;
-				if (left > 0) {
-					left--;
-					self.moduleSampleTimer = setTimeout(sample, 1000, left);
-				}
-			});
-		}, 500);
+	async startModuleUpdateSampler(module: CageModule, iterations) {
+		await this.sleep(500);
+		await this.sampleModuleSensors(module);
+		if (iterations > 0) {
+			iterations--;
+			await this.startModuleUpdateSampler(module, iterations);
+		}
 	}
 
 	async sampleModuleSensors(module: CageModule) {
-		let sensors = ['statusLED', 'optPower', 'rfLevel', 'rfLinkTest', 'rfTestTimer', 'measRfLevel', 'temp', 'monTimer'];
+		let sensors = ['statusLED', 'optPower', 'rfLevel', 'temp'];
+		// 'rfLinkTest', 'rfTestTimer', 'measRfLevel', 'monTimer'];
 		let varBinds = CAGE_MODULE_VARBINDS.filter((varbind) => {
 			return sensors.find((sensor) => {
 				return varbind.name == sensor;
@@ -170,20 +168,18 @@ export class MIBCage extends EventEmitter {
 		let values = [];
 		for (let varbind of varBinds) {
 			varbind.index = module.index;
-			let value = await this.snmp.get(varbind);
-			values.push(value);
+			const result: any = await this.snmp.get(varbind);
+			module[varbind.name] = result.value;
 		}
-		values.map(varbind => {
-			let value = varbind.value;
-			module[varbind.name] = value;
-		});
-		let idx = this.cageModules.findIndex((item) => {
-			return item.slot == module.slot && item.name == module.name;
-		});
-		this.cageModules[idx] = module;
+		console.log('slot:', module.slot, 'index:', module.slot - 1, 'status:', module.statusLED);
+		this.cageModules[module.slot - 1] = module;
 
 		this.emit('sensors', module);
 		return module;
+	}
+
+	async sleep(millis) {
+		return new Promise(resolve => setTimeout(resolve, millis));
 	}
 
 	async setCageGroupParameter(group: CageGroup) {
@@ -219,7 +215,7 @@ export class MIBCage extends EventEmitter {
 		});
 		let currentModule = this.cageModules[index];
 
-		let fields = ['lna', 'atten', 'laser', 'measRfLevel', 'rfLinkTest', 'rfLinkTestTime', 'monPlan', 'monInterval', 'optPower'];
+		let fields = ['lna', 'atten', 'laser', 'measRfLevel', 'rfLinkTest', 'rfLinkTestTime', 'monPlan', 'monInterval', 'optPower', 'setDefaults', 'restoreFactory'];
 
 		let varBinds = CAGE_MODULE_VARBINDS.filter(varbind => {
 			return fields.indexOf(varbind.name) > -1 && currentModule[varbind.name] != module[varbind.name];
