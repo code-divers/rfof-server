@@ -78,7 +78,7 @@ export class MIBCage extends EventEmitter {
 			}
 			if (logline.slot != null) {
 				logline.module = this.cageModules.find((item) => {
-					return item.slot == logline.slot;
+					return Number(item.slot) == Number(logline.slot);
 				});
 				if (!logline.module) {
 					await this.getCageModulsAsync();
@@ -90,7 +90,10 @@ export class MIBCage extends EventEmitter {
 					logline.module.slotStatus = SlotStatus.out;
 				} else if (logline.value == 'added module') {
 					logline.module.slotStatus = SlotStatus.in;
+				} else {
+					logline.module.slotStatus = SlotStatus.in;
 				}
+
 				this.emit('slotStatusChanged', logline.module);
 				await this.startModuleUpdateSampler(logline.module, 1);
 			}
@@ -158,8 +161,8 @@ export class MIBCage extends EventEmitter {
 	}
 
 	async sampleModuleSensors(module: CageModule) {
-		let sensors = ['statusLED', 'optPower', 'rfLevel', 'temp'];
-		// 'rfLinkTest', 'rfTestTimer', 'measRfLevel', 'monTimer'];
+		let sensors = ['statusLED', 'optPower', 'rfLevel', 'temp', 'measRfLevel', 'setDefaults'];
+		// 'rfLinkTest', 'rfTestTimer', 'monTimer'];
 		let varBinds = CAGE_MODULE_VARBINDS.filter((varbind) => {
 			return sensors.find((sensor) => {
 				return varbind.name == sensor;
@@ -171,8 +174,11 @@ export class MIBCage extends EventEmitter {
 			const result: any = await this.snmp.get(varbind);
 			module[varbind.name] = result.value;
 		}
-		console.log('slot:', module.slot, 'index:', module.slot - 1, 'status:', module.statusLED);
-		this.cageModules[module.slot - 1] = module;
+		let index = this.cageModules.findIndex((item) => {
+			return Number(item.slot) == Number(module.slot);
+		});
+		console.log('slot:', module.slot, 'index:', index, 'status:', module.statusLED);
+		this.cageModules[index] = module;
 
 		this.emit('sensors', module);
 		return module;
@@ -211,7 +217,7 @@ export class MIBCage extends EventEmitter {
 
 	async setModuleParameter(module: CageModule) {
 		let index = this.cageModules.findIndex((item) => {
-			return item.slot == module.slot;
+			return Number(item.slot) == Number(module.slot);
 		});
 		let currentModule = this.cageModules[index];
 
@@ -220,12 +226,9 @@ export class MIBCage extends EventEmitter {
 		let varBinds = CAGE_MODULE_VARBINDS.filter(varbind => {
 			return fields.indexOf(varbind.name) > -1 && currentModule[varbind.name] != module[varbind.name];
 		});
-		varBinds.map((varbind) => {
+		for (let varbind of varBinds) {
 			varbind.value = module[varbind.name];
 			varbind.index = module.index;
-			return varbind;
-		});
-		for (let varbind of varBinds) {
 			await this.snmp.set(varbind);
 			this.cageModules[index][varbind.name] = varbind.value;
 		}
@@ -455,7 +458,7 @@ export class MIBCage extends EventEmitter {
 			cageModules.push(cageModule);
 		}
 		this.cageModules = cageModules;
-		return cageModules;
+		return this.cageModules;
 	}
 
 	private async getCageEventsAsync() {
