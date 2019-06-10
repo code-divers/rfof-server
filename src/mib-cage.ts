@@ -129,10 +129,10 @@ export class MIBCage extends EventEmitter {
 				self.emit('sensors', updatedModule);
 				if (updatedModule.rfLinkTest == RfLinkTest.on) {
 					if (self.sampleTimer) clearTimeout(self.sampleTimer);
-					self.sampleTimer = setTimeout(sample, 500);
+					self.sampleTimer = setTimeout(sample, 1000);
 				}
 			});
-		}, 500);
+		}, 2000);
 	}
 
 	public startMonplanTestSampler(module: CageModule) {
@@ -141,10 +141,10 @@ export class MIBCage extends EventEmitter {
 			self.sampleModuleSensors(module).then(updatedModule => {
 				if (updatedModule.monPlan == MonPlan.active) {
 					if (self.sampleTimer) clearTimeout(self.sampleTimer);
-					self.sampleTimer = setTimeout(sample, 500);
+					self.sampleTimer = setTimeout(sample, 1000);
 				}
 			});
-		}, 500);
+		}, 2000);
 	}
 
 	public showRFLevelSampler(module: CageModule) {
@@ -161,8 +161,7 @@ export class MIBCage extends EventEmitter {
 	}
 
 	async sampleModuleSensors(module: CageModule) {
-		let sensors = ['statusLED', 'optPower', 'rfLevel', 'temp', 'measRfLevel', 'setDefaults'];
-		// 'rfLinkTest', 'rfTestTimer', 'monTimer'];
+		let sensors = ['statusLED', 'optPower', 'rfLevel', 'temp', 'measRfLevel', 'setDefaults', 'rfLinkTest', 'rfTestTimer', 'monTimer'];
 		let varBinds = CAGE_MODULE_VARBINDS.filter((varbind) => {
 			return sensors.find((sensor) => {
 				return varbind.name == sensor;
@@ -177,7 +176,8 @@ export class MIBCage extends EventEmitter {
 		let index = this.cageModules.findIndex((item) => {
 			return Number(item.slot) == Number(module.slot);
 		});
-		console.log('slot:', module.slot, 'index:', index, 'status:', module.statusLED);
+		logger.info('slot %s, sampled with status %s', module.slot, module.statusLED);
+
 		this.cageModules[index] = module;
 
 		this.emit('sensors', module);
@@ -234,9 +234,11 @@ export class MIBCage extends EventEmitter {
 		}
 
 		if (module.rfLinkTest == RfLinkTest.on) {
+			logger.info('rflinktest active for slot %s', );
 			this.startRFTestSampler(module);
 		}
 		if (module.monPlan == MonPlan.active) {
+			logger.info('monplan active');
 			this.startMonplanTestSampler(module);
 		}
 
@@ -273,7 +275,7 @@ export class MIBCage extends EventEmitter {
 				this.cageEventlog = CAGE_EVENTS;
 			}
 		} catch (err) {
-			console.log(err);
+			logger.error(err);
 		} finally {
 			this.emit('flush', {
 				cage: this.cage,

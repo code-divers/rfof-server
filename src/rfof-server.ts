@@ -95,7 +95,6 @@ export class RfofServer {
 
 	private setStaticRoute() {
 		let app = this.app;
-		console.log(path.join(__dirname, environment.clientFolder));
 		app.use('/', express.static(path.join(__dirname, environment.clientFolder)));
 	}
 
