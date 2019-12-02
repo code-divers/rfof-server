@@ -66,7 +66,7 @@ export class SNMP {
 
 	get(varBind: SnmpVarBind) {
 		return new Promise((resolve, reject) => {
-			let command = `snmpget -c ${this.community} -v 2c ${this.server} ${varBind.oid}`;
+			let command = `snmpget -t ${environment.snmpTimeout} -c ${this.community} -v 2c ${this.server} ${varBind.oid}`;
 			if (varBind.index != null) {
 				command += `.${varBind.index}`;
 			}
@@ -102,7 +102,7 @@ export class SNMP {
 	table(schema: SnmpTable) {
 		return new Promise((resolve, reject) => {
 			let table = [];
-			let command = `snmptable -v 2c -c ${this.community} -Ci -Os ${this.server} RFoF-Cage-MIB::${schema.systemName}`;
+			let command = `snmptable -t ${environment.snmpTimeout} -v 2c -c ${this.community} -Ci -Os ${this.server} RFoF-Cage-MIB::${schema.systemName}`;
 			exec(command, (err, out) => {
 				logger.debug('Executed command %s with result %s', command, out);
 				if (err) {
@@ -146,7 +146,7 @@ export class SNMP {
 			if (varbind.type == 'string') {
 				varbindValue = `'${varbind.value}'`;
 			}
-			let command = `snmpset -Os -v2c -c ${this.community} ${this.server} ${varbindGroup}::${varbindName} ${varbind.type} ${varbindValue}`;
+			let command = `snmpset -t ${environment.snmpTimeout} -Os -v2c -c ${this.community} ${this.server} ${varbindGroup}::${varbindName} ${varbind.type} ${varbindValue}`;
 			exec(command, (err, out) => {
 				logger.info('Executed command %s with result %s', command, out);
 				if (err) {

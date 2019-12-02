@@ -67,9 +67,9 @@ export class RfofServer {
 				}
 			});
 
-			this.mib.on('slotStatusChanged', (module) => {
-				logger.debug('slot status changed %s', module);
-				this.io.emit('slotStatusChanged', module);
+			this.mib.on('slotStatusChanged', (module, group) => {
+				logger.debug('slot status changed %s group %s', module, group);
+				this.io.emit('slotStatusChanged', module, group);
 			});
 
 			this.mib.on('cageStateChanged', (state: CageState) => {
@@ -142,16 +142,16 @@ export class RfofServer {
 			let message = null;
 			switch (req.params.message) {
 				case '1':
-					message = 'critical, Failure: Group 2, Slot(3) RFin1, Optical signal loss';
+					message = 'critical, Failure: Group 2, Slot(4) RFin2, Optical signal loss';
 					break;
 				case '2':
-					message = 'notify, Recovery: Group 1, Slot(2) RF3, Optical signal restored';
+					message = 'notify, Recovery: Group 2, Slot(4) RFin2, Optical signal restored';
 					break;
 				case '3':
-					message = 'critical, Failure: Group 1, Slot(2) RF3, Optical signal loss';
+					message = 'critical, Error: Group 2, Slot(4) RFin2, missing or communication failure';
 					break;
 				case '4':
-					message = 'notify, Recovery: Group 2, Slot(3) RFin1, Optical signal restored';
+					message = 'notify, Recovery: Group 3, Slot(13) RFin5, Optical signal restored';
 					break;
 			}
 			this.mib.testTrap(message).then((result) => {

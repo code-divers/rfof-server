@@ -7,6 +7,7 @@ import { SNMPListener } from './snmp-listener';
 import { SNMPGuard } from './snmp-guard';
 import { CAGE, CAGE_EVENTS, CAGE_GROUPS, CAGE_MODULES, CAGE_POWERSUPPLY, CAGE_TRAPRECIVERS } from 'rfof-common';
 import { logger } from './logger';
+import { LogEntry } from 'winston';
 
 export class MIBCage extends EventEmitter {
 	private snmp: SNMP;
@@ -21,6 +22,7 @@ export class MIBCage extends EventEmitter {
 	network: TrapReciver[] = [];
 	cageGroups: CageGroup[] = [];
 	cageModules: CageModule[] = [];
+	cageSlots: CageSlot[] = [];
 	cageEventlog: EventLogItem[] = [];
 
 	constructor() {
@@ -34,18 +36,15 @@ export class MIBCage extends EventEmitter {
 			await self.handleMessage(message);
 		});
 		this.snmpGuard.messageEmitter.on('cageStateChanged', (state: CageState) => {
-			if (state == CageState.on) {
-				self.getData().then(() => {
-					self.emit('cageStateChanged', state);
-				});
-			} else {
-				self.emit('cageStateChanged', state);
-			}
+			self.emit('cageStateChanged', state);
 		});
 	}
 
 	public async start() {
 		await this.snmp.start();
+		await this.getData().then(() => {
+			this.emit('cageStateChanged', CageState.on);
+		});
 		await this.disableLogfile();
 		this.snmpListener.start();
 		this.snmpGuard.start();
@@ -80,25 +79,94 @@ export class MIBCage extends EventEmitter {
 				logline.module = this.cageModules.find((item) => {
 					return Number(item.slot) == Number(logline.slot);
 				});
-				if (!logline.module) {
-					await this.getCageModulsAsync();
-				}
 			}
 
 			if (logline.module) {
-				if (logline.value == 'missing or communication failure') {
+				if (logline.value == 'optical signal loss' || logline.value == 'missing or communication failure') {
 					logline.module.slotStatus = SlotStatus.out;
-				} else if (logline.value == 'added module') {
+				} else if (logline.value == 'optical signal restored') {
 					logline.module.slotStatus = SlotStatus.in;
 				} else {
 					logline.module.slotStatus = SlotStatus.in;
 				}
 
+				await this.startModuleUpdateSampler(logline.module, 1, true);
 				this.emit('slotStatusChanged', logline.module);
-				await this.startModuleUpdateSampler(logline.module, 1);
 			}
 			this.emit('eventlogline', logline);
 			return logline;
+		}
+	}
+
+	async createModuleFromLogline(logline: LogEntry) {
+		const module: any = {
+			slot: logline.slot,
+			groupIndex: logline.group.index
+		};
+		console.log(this.cageSlots);
+		console.log(module);
+		const slot = this.cageSlots.find(item => {
+			return item.num == module.slot && item.groupIndex ==  module.groupIndex;
+		});
+		console.log(slot);
+		module.index = `${module.groupIndex}.${slot.moduleIndex}`;
+		logline.group.modules.push(module);
+		return await this.sampleModuleSensors(module, true);
+	}
+
+
+	interpretLogLine(line: EventLogItem) {
+		let lineStyle = /PSU\s*(\d)\s*(is|has)\s*(OK|Not Installed|Failed)/;
+		let lineStyle_g = /PSU\s*(\d)\s*(is|has)\s*(OK|Not Installed|Failed)/g;
+		let matches = line.detail.match(lineStyle_g);
+		if (matches) {
+			let power: PowerSupply = [];
+			for (let match of matches) {
+				let psuMatch = match.match(lineStyle);
+				let powerSupply = new PowerSupply();
+				powerSupply.slot = psuMatch[1];
+				switch (psuMatch[3]) {
+					case "OK":
+						powerSupply.status = PowerStatus.ok;
+						break;
+
+					case "Failed":
+						powerSupply.status = PowerStatus.failure;
+						break;
+					default:
+					case "Not Installed":
+						powerSupply.status = PowerStatus.unknown;
+						break;
+				}
+				power.push(powerSupply);
+			}
+			line.psu = power;
+			return;
+		}
+
+		let lineStyle1 = /Group\s*(\d),\s*Slot\((\d*)\)\s*(\w*),\s*([\w]*)\s=\s*(\w*)\s*\((\d)\)/;
+		let lineStyle2 = /Group\s*(\d),\s*Slot\((\d*)\)\s*(\w*),\s*([\w\W]*)/;
+		let lineStyle3 = /Group\s*(\d),\s*([\w\W]*)/;
+		let lineStyles = [lineStyle1, lineStyle2, lineStyle3];
+		for (let regex of lineStyles) {
+			let matches = line.detail.match(regex);
+			if (matches) {
+				line.group = this.cageGroups.find((item) => {
+					return item.index == matches[1].trim();
+				});
+				if (matches.length > 3) {
+					line.slot = matches[2].trim();
+				}
+
+				if (matches.length > 5) {
+					line.property = matches[4].trim();
+					line.value = matches[6].toLowerCase();
+				} else if (matches.length > 4) {
+					line.property = matches[3];
+					line.value = matches[4].toLowerCase();
+				}
+				break;
+			}
 		}
 	}
 
@@ -151,23 +219,25 @@ export class MIBCage extends EventEmitter {
 		return this.sampleModuleSensors(module);
 	}
 
-	async startModuleUpdateSampler(module: CageModule, iterations) {
+	async startModuleUpdateSampler(module: CageModule, iterations, all = false) {
 		await this.sleep(500);
-		await this.sampleModuleSensors(module);
+		await this.sampleModuleSensors(module, all);
 		if (iterations > 0) {
 			iterations--;
-			await this.startModuleUpdateSampler(module, iterations);
+			await this.startModuleUpdateSampler(module, iterations, all);
 		}
 	}
 
-	async sampleModuleSensors(module: CageModule) {
+	async sampleModuleSensors(module: CageModule, all = false) {
 		let sensors = ['statusLED', 'optPower', 'rfLevel', 'temp', 'measRfLevel', 'setDefaults', 'rfLinkTest', 'rfTestTimer', 'monTimer'];
+		if (all) {
+			sensors = sensors.concat(['name', 'slotLabel',  'type', 'status', 'partNumber', 'serial', 'biasT']);
+		}
 		let varBinds = CAGE_MODULE_VARBINDS.filter((varbind) => {
 			return sensors.find((sensor) => {
 				return varbind.name == sensor;
 			}) != null;
 		});
-		let values = [];
 		for (let varbind of varBinds) {
 			varbind.index = module.index;
 			const result: any = await this.snmp.get(varbind);
@@ -176,11 +246,13 @@ export class MIBCage extends EventEmitter {
 		let index = this.cageModules.findIndex((item) => {
 			return Number(item.slot) == Number(module.slot);
 		});
-		logger.info('slot %s, sampled with status %s', module.slot, module.statusLED);
-
-		this.cageModules[index] = module;
-
+		if (index < 0) {
+			this.cageModules.push(module);
+		} else {
+			this.cageModules[index] = module;
+		}
 		this.emit('sensors', module);
+		logger.info('slot %s, sampled with status %s', module.slot, module.statusLED);
 		return module;
 	}
 
@@ -454,8 +526,19 @@ export class MIBCage extends EventEmitter {
 			cageModule.index = row.index;
 			let res = /^(\d).(\d)/.exec(row.index);
 			if (res) {
-				let groupIndex = Number(res[1]) - 1;
-				this.cageGroups[groupIndex].modules.push(cageModule);
+				const moduleIndex = Number(res[2]);
+				const groupIndex = Number(res[1]);
+				cageModule.groupIndex = groupIndex;
+				this.cageGroups[groupIndex - 1].modules.push(cageModule);
+
+				this.cageSlots.push({
+					num: cageModule.slot,
+					moduleIndex: moduleIndex,
+					groupIndex: groupIndex
+				});
+			}
+			if (cageModule.status == ModuleStatus.none) {
+				cageModule.slotStatus = SlotStatus.out;
 			}
 			cageModules.push(cageModule);
 		}
@@ -493,68 +576,6 @@ export class MIBCage extends EventEmitter {
 
 		this.interpretLogLine(logline);
 		return logline;
-	}
-
-	interpretLogLine(line: EventLogItem) {
-		let lineStyle = /Added\s*module\s*type\s*([\w-]*)\s*S\/N\s*(\d*)\s*in\s*slot\s*([\d]*)/;
-		let matches = line.detail.match(lineStyle);
-		if (matches) {
-			line.slot = matches[3];
-			line.value = 'added module';
-			return;
-		}
-
-		lineStyle = /PSU\s*(\d)\s*(is|has)\s*(OK|Not Installed|Failed)/;
-		let lineStyle_g = /PSU\s*(\d)\s*(is|has)\s*(OK|Not Installed|Failed)/g;
-		matches = line.detail.match(lineStyle_g);
-		if (matches) {
-			let power: PowerSupply = [];
-			for (let match of matches) {
-				let psuMatch = match.match(lineStyle);
-				let powerSupply = new PowerSupply();
-				powerSupply.slot = psuMatch[1];
-				switch (psuMatch[3]) {
-					case "OK":
-						powerSupply.status = PowerStatus.ok;
-						break;
-
-					case "Failed":
-						powerSupply.status = PowerStatus.failure;
-						break;
-					default:
-					case "Not Installed":
-						powerSupply.status = PowerStatus.unknown;
-						break;
-				}
-				power.push(powerSupply);
-			}
-			line.psu = power;
-			return;
-		}
-
-		let lineStyle1 = /Group\s*(\d),\s*Slot\((\d*)\)\s*(\w*),\s*([\w]*)\s=\s*(\w*)\s*\((\d)\)/;
-		let lineStyle2 = /Group\s*(\d),\s*Slot\((\d*)\)\s*(\w*),\s*([\w\W]*)/;
-		let lineStyle3 = /Group\s*(\d),\s*([\w\W]*)/;
-		let lineStyles = [lineStyle1, lineStyle2, lineStyle3];
-		for (let regex of lineStyles) {
-			let matches = line.detail.match(regex);
-			if (matches) {
-				line.group = this.cageGroups.find((item) => {
-					return item.index == matches[1].trim();
-				});
-				if (matches.length > 3) {
-					line.slot = matches[2].trim();
-				}
-
-				if (matches.length > 5) {
-					line.property = matches[4].trim();
-					line.value = matches[6];
-				} else if (matches.length > 4) {
-					line.value = matches[4];
-				}
-				break;
-			}
-		}
 	}
 
 	getCageState() {

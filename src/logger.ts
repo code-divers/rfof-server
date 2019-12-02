@@ -1,7 +1,8 @@
 import * as winston from 'winston';
+import { environment } from './environments/environment';
 
 export const logger = winston.createLogger({
-	level: 'info',
+	level: environment.logger,
 	format: winston.format.combine(
 		winston.format.timestamp(),
 		winston.format.splat(),
