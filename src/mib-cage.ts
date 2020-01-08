@@ -69,30 +69,21 @@ export class MIBCage extends EventEmitter {
 			logger.info('Recived logline %s', logline.detail);
 
 			this.interpretLogLine(logline);
+			console.log(logline);
 			if (logline.psu != null) {
 				this.power = logline.psu;
 				this.emit('flush', {
 					power: this.power
 				});
 			}
-			if (logline.slot != null) {
-				logline.module = this.cageModules.find((item) => {
-					return Number(item.slot) == Number(logline.slot);
-				});
-			}
-
 			if (logline.module) {
-				if (logline.value == 'optical signal loss' || logline.value == 'missing or communication failure') {
-					logline.module.slotStatus = SlotStatus.out;
-				} else if (logline.value == 'optical signal restored') {
-					logline.module.slotStatus = SlotStatus.in;
-				} else {
-					logline.module.slotStatus = SlotStatus.in;
+				logline.module.slotStatus = logline.slotStatus;
+				if (logline.slotStatus == SlotStatus.in) {
+					await this.startModuleUpdateSampler(logline.module, 1, true);
 				}
-
-				await this.startModuleUpdateSampler(logline.module, 1, true);
 				this.emit('slotStatusChanged', logline.module);
 			}
+
 			this.emit('eventlogline', logline);
 			return logline;
 		}
@@ -167,6 +158,28 @@ export class MIBCage extends EventEmitter {
 				}
 				break;
 			}
+		}
+
+		line.slotStatus = SlotStatus.in;
+		lineStyle1 = /Module type\s*(...*)\s*S\/N\s*(\d*)\s*in slot\s*(\d*)\s*(...*)/;
+		matches = line.detail.match(lineStyle1);
+		if (matches) {
+			line.slot = matches[3];
+			if (matches[4] == 'was removed') {
+				line.slotStatus = SlotStatus.out;
+			}
+		}
+		lineStyle1 = /Added module type\s*(...*)\s*S\/N\s*(\d*)\s*in slot\s*(\d*)/;
+		matches = line.detail.match(lineStyle1);
+		if (matches) {
+			line.slot = matches[3];
+			line.slotStatus = SlotStatus.in;
+		}
+
+		if (line.slot != null) {
+			line.module = this.cageModules.find((item) => {
+				return Number(item.slot) == Number(line.slot);
+			});
 		}
 	}
 

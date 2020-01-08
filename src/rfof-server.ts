@@ -142,10 +142,10 @@ export class RfofServer {
 			let message = null;
 			switch (req.params.message) {
 				case '1':
-					message = 'critical, Failure: Group 2, Slot(4) RFin2, Optical signal loss';
+					message = 'notify, Module type RFoF2R5FR-PA-11 S/N 70322886 in slot 5 was removed';
 					break;
 				case '2':
-					message = 'notify, Recovery: Group 2, Slot(4) RFin2, Optical signal restored';
+					message = 'notify, Added module type RFoF2R5FR-PA-11 S/N 70322886 in slot 5';
 					break;
 				case '3':
 					message = 'critical, Error: Group 2, Slot(4) RFin2, missing or communication failure';
