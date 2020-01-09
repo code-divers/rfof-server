@@ -160,7 +160,12 @@ export class MIBCage extends EventEmitter {
 			}
 		}
 
-		line.slotStatus = SlotStatus.in;
+		if (line.value == 'missing or communication failure') {
+			line.slotStatus = SlotStatus.out;
+		} else {
+			line.slotStatus = SlotStatus.in;
+		}
+
 		lineStyle1 = /Module type\s*(...*)\s*S\/N\s*(\d*)\s*in slot\s*(\d*)\s*(...*)/;
 		matches = line.detail.match(lineStyle1);
 		if (matches) {

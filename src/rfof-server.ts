@@ -148,7 +148,7 @@ export class RfofServer {
 					message = 'notify, Added module type RFoF2R5FR-PA-11 S/N 70322886 in slot 5';
 					break;
 				case '3':
-					message = 'critical, Error: Group 2, Slot(4) RFin2, missing or communication failure';
+					message = 'notify, Error: Group 1, Slot(5) T2, missing or communication failure';
 					break;
 				case '4':
 					message = 'notify, Recovery: Group 3, Slot(13) RFin5, Optical signal restored';
